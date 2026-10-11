@@ -1,0 +1,43 @@
+//! Parser integration fixture.
+mod math
+use math::{add, mul}
+
+#[derive(Eq, Hash)]
+pub type Option[T] = Some(T) | None
+
+trait Show {
+    fn show(self): Str
+}
+
+impl Show for Option[Int] {
+    #[inline]
+    fn show(self): Str = match self {
+        Some(value) if value > 0 => "positive"
+        Some(0) | None => "empty"
+        _ => "negative"
+    }
+}
+
+fn id[T](value: T): T = value
+
+fn flows(values: [Int], maybe: Option[Int], fallback: Int): Int {
+    let section = values[1..3]
+    let parsed = input |> trim |> parse? |> double
+    let selected = maybe ?? fallback
+    print(section, parsed)
+    selected
+}
+
+fn exercise(mut point: Point, values: [Int]): Int {
+    let picked = id[Int](values[0])
+    let pair = fn(x: Int): Int = x + picked
+    let Some(answer) = Option::Some(pair(point.x)) else { return 0 }
+    for (index, value) in values { print(index, value) }
+    while answer > 10 { break answer }
+    match point {
+        Point { x, y: 0 } => x
+        [1, 2] => 2
+        1..=9 => 9
+        _ => answer
+    }
+}

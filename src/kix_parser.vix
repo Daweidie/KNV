@@ -1,0 +1,742 @@
+#[no_main]
+import "lexer.vix"
+import "kix_ast.vix"
+
+pub type KixParser = struct {
+    stream: TokenStream,
+    pos: i32,
+    ok: i32,
+    error: string,
+    store: KixNodeStore,
+    stop_at_block: i32
+}
+
+pub fn kp_new(src: string): KixParser => KixParser{ stream: tokenize_kix(src), pos: 0, ok: 1, error: "", store: kix_store_new(), stop_at_block: 0 }
+pub fn kp_text(p: &KixParser): string => stream_text_at(p.stream, p.pos)
+pub fn kp_kind(p: &KixParser): i32 => stream_kind_at(p.stream, p.pos)
+pub fn kp_line(p: &KixParser): i32 => stream_line_at(p.stream, p.pos)
+pub fn kp_col(p: &KixParser): i32 => stream_col_at(p.stream, p.pos)
+pub fn kp_start(p: &KixParser): i32 => stream_start_at(p.stream, p.pos)
+pub fn kp_end(p: &KixParser): i32 => stream_end_at(p.stream, p.pos)
+pub fn kp_eof(p: &KixParser): i32 => if (kp_kind(p) == tk_eof()) { 1 } else { 0 }
+
+pub fn kp_advance(p: &KixParser)
+{
+    if (p.pos + 1 < stream_len(p.stream)) { p.pos += 1 }
+}
+
+pub fn kp_fail(p: &KixParser, message: string)
+{
+    if (p.ok == 1)
+    {
+        p.ok = 0
+        p.error = "E1100 Kix parse error at " + i32_to_str(kp_line(p)) + ":" + i32_to_str(kp_col(p)) + ": " + message
+    }
+}
+
+pub fn kp_accept(p: &KixParser, text: string): i32
+{
+    if (kp_text(p) == text) { kp_advance(p); return 1 }
+    return 0
+}
+
+pub fn kp_expect(p: &KixParser, text: string): i32
+{
+    if (kp_accept(p, text) == 1) { return 1 }
+    kp_fail(p, "expected '" + text + "', got '" + kp_text(p) + "'")
+    return 0
+}
+
+pub fn kp_skip_semis(p: &KixParser) { while (kp_text(p) == ";") { kp_advance(p) } }
+
+pub fn kp_join_token(out: string, token: string): string
+{
+    if (out == "") { return token }
+    let last = compiler_string_byte(out, out.length - 1)
+    let first = if (token.length > 0) { compiler_string_byte(token, 0) } else { 0 }
+    if ((is_ident(last) == 1 or last == 39) and (is_ident(first) == 1 or first == 39)) { return out + " " + token }
+    return out + token
+}
+
+pub fn kp_collect_until(p: &KixParser, stop1: string, stop2: string, stop3: string): string
+{
+    let mut out = ""
+    let mut parens = 0
+    let mut brackets = 0
+    while (kp_eof(p) == 0)
+    {
+        let text = kp_text(p)
+        if (parens == 0 and brackets == 0 and (text == stop1 or text == stop2 or text == stop3)) { break }
+        if (text == "(") { parens += 1 }
+        elif (text == ")") { if (parens == 0) { break }; parens -= 1 }
+        elif (text == "[") { brackets += 1 }
+        elif (text == "]") { if (brackets == 0) { break }; brackets -= 1 }
+        out = kp_join_token(out, text)
+        kp_advance(p)
+    }
+    return out
+}
+
+pub fn kp_collect_return_type(p: &KixParser): string
+{
+    let mut out = ""
+    let mut brackets = 0
+    while (kp_eof(p) == 0)
+    {
+        let text = kp_text(p)
+        if (brackets == 0 and (text == "=" or text == "{" or text == ";" or text == "}")) { break }
+        if (text == "[") { brackets += 1 }
+        elif (text == "]") { brackets -= 1 }
+        out = kp_join_token(out, text)
+        kp_advance(p)
+    }
+    return out
+}
+
+pub fn kp_parse_attr(p: &KixParser): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+    kp_expect(p, "#"); kp_expect(p, "[")
+    if (p.ok == 0) { return -1 }
+    let name = kp_text(p)
+    if (kp_kind(p) != tk_ident() and kp_kind(p) != tk_keyword()) { kp_fail(p, "expected attribute name"); return -1 }
+    kp_advance(p)
+    let mut args = ""
+    if (kp_accept(p, "(") == 1)
+    {
+        args = kp_collect_until(p, ")", "", "")
+        kp_expect(p, ")")
+    }
+    kp_expect(p, "]")
+    return kix_store_add(p.store, kix_node_new("Attribute", name, args, [], [], [], [], 0, line, col, start, stream_end_at(p.stream, p.pos - 1)))
+}
+
+pub fn kp_precedence(op: string): i32
+{
+    if (op == "=" or op == "+=" or op == "-=" or op == "*=" or op == "/=" or op == "%=" or op == "&=" or op == "|=" or op == "^=" or op == "<<=" or op == ">>=") { return 1 }
+    if (op == "|>") { return 2 }
+    if (op == "??") { return 3 }
+    if (op == ".." or op == "..=") { return 4 }
+    if (op == "||") { return 5 }
+    if (op == "&&") { return 6 }
+    if (op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=") { return 7 }
+    if (op == "|") { return 8 }
+    if (op == "^") { return 9 }
+    if (op == "&") { return 10 }
+    if (op == "<<" or op == ">>") { return 11 }
+    if (op == "+" or op == "-") { return 12 }
+    if (op == "*" or op == "/" or op == "%") { return 13 }
+    if (op == "as") { return 14 }
+    return 0
+}
+
+pub fn kp_right_assoc(op: string): i32 => if (op == "=" or op == "+=" or op == "-=" or op == "*=" or op == "/=" or op == "%=" or op == "&=" or op == "|=" or op == "^=" or op == "<<=" or op == ">>=" or op == "??") { 1 } else { 0 }
+
+pub fn kp_bracket_is_generic_apply(p: &KixParser): i32
+{
+    if (kp_text(p) != "[") { return 0 }
+    let mut pos = p.pos
+    let mut depth = 0
+    while (pos < stream_len(p.stream))
+    {
+        let text = stream_text_at(p.stream, pos)
+        if (text == "[") { depth += 1 }
+        elif (text == "]")
+        {
+            depth -= 1
+            if (depth == 0)
+            {
+                if (pos + 1 < stream_len(p.stream) and (stream_text_at(p.stream, pos + 1) == "(" or stream_text_at(p.stream, pos + 1) == "{")) { return 1 }
+                return 0
+            }
+        }
+        pos += 1
+    }
+    return 0
+}
+
+pub fn kp_parse_expr(p: &KixParser): i32 => kp_parse_binary(p, 1)
+
+pub fn kp_parse_binary(p: &KixParser, min_prec: i32): i32
+{
+    let mut left = kp_parse_unary(p)
+    if (p.ok == 0) { return -1 }
+    while (1 == 1)
+    {
+        let op = kp_text(p)
+        let prec = kp_precedence(op)
+        if (prec < min_prec or prec == 0) { break }
+        let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+        kp_advance(p)
+        if (op == "as")
+        {
+            let ty = kp_collect_until(p, ";", "}", ",")
+            let type_node = kix_leaf(p.store, "Type", ty, line, col, start, kp_start(p))
+            left = kix_tree(p.store, "Cast", op, [left, type_node], line, col, start, kp_start(p))
+        }
+        else
+        {
+            let next_min = if (kp_right_assoc(op) == 1) { prec } else { prec + 1 }
+            let right = kp_parse_binary(p, next_min)
+            if (p.ok == 0) { return -1 }
+            let tag = if (prec == 1) { "Assign" } elif (op == ".." or op == "..=") { "Range" } elif (op == "|>") { "Pipe" } elif (op == "??") { "Coalesce" } else { "Binary" }
+            left = kix_tree(p.store, tag, op, [left, right], line, col, start, kix_store_get(p.store, right).end)
+        }
+    }
+    return left
+}
+
+pub fn kp_parse_unary(p: &KixParser): i32
+{
+    let text = kp_text(p)
+    if (text == "!" or text == "-" or text == "*" or text == "&")
+    {
+        let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+        kp_advance(p)
+        let mut op = text
+        if (text == "&" and kp_accept(p, "mut") == 1) { op = "&mut" }
+        let value = kp_parse_unary(p)
+        // Kix borrows retain the complete operand expression.  Vix's legacy
+        // AST stores only a variable name, which is why bootstrap source must
+        // use helper-style access for nested compiler state.  The Kix semantic
+        // pass will require this child to be a place (path/field/index/deref).
+        return kix_tree(p.store, if (text == "&") { "Borrow" } else { "Unary" }, op, [value], line, col, start, kix_store_get(p.store, value).end)
+    }
+    return kp_parse_postfix(p)
+}
+
+pub fn kp_parse_postfix(p: &KixParser): i32
+{
+    let mut expr = kp_parse_primary(p)
+    if (p.ok == 0) { return -1 }
+    while (1 == 1)
+    {
+        if (kp_accept(p, "(") == 1)
+        {
+            let line = kp_line(p); let col = kp_col(p); let start = kix_store_get(p.store, expr).start
+            let mut children: [i32] = [expr]
+            if (kp_text(p) != ")")
+            {
+                while (1 == 1)
+                {
+                    children.push(kp_parse_expr(p))
+                    if (p.ok == 0 or kp_accept(p, ",") == 0) { break }
+                    if (kp_text(p) == ")") { break }
+                }
+            }
+            kp_expect(p, ")")
+            expr = kix_tree(p.store, "Call", "", children, line, col, start, stream_end_at(p.stream, p.pos - 1))
+        }
+        elif (kp_accept(p, ".") == 1)
+        {
+            let line = kp_line(p); let col = kp_col(p); let start = kix_store_get(p.store, expr).start
+            let name = kp_text(p)
+            if (kp_kind(p) != tk_ident()) { kp_fail(p, "expected field or method name"); return -1 }
+            let end = kp_end(p); kp_advance(p)
+            expr = kix_tree(p.store, "Field", name, [expr], line, col, start, end)
+        }
+        elif (kp_bracket_is_generic_apply(p) == 1)
+        {
+            let base = kix_store_get(p.store, expr)
+            kp_expect(p, "[")
+            let mut type_args: [string] = []
+            while (kp_text(p) != "]" and kp_eof(p) == 0)
+            {
+                type_args.push(kp_collect_until(p, ",", "]", ""))
+                if (kp_accept(p, ",") == 0) { break }
+            }
+            kp_expect(p, "]")
+            expr = kix_store_add(p.store, kix_node_new("GenericApply", "", "", [expr], [], [], type_args, 0, base.line, base.col, base.start, stream_end_at(p.stream, p.pos - 1)))
+        }
+        elif (p.stop_at_block == 0 and kp_accept(p, "{") == 1)
+        {
+            let base = kix_store_get(p.store, expr)
+            let mut fields: [i32] = []
+            while (kp_text(p) != "}" and kp_eof(p) == 0)
+            {
+                let fline = kp_line(p); let fcol = kp_col(p); let fstart = kp_start(p); let name = kp_text(p)
+                if (kp_kind(p) != tk_ident()) { kp_fail(p, "expected record field name"); return -1 }
+                kp_advance(p)
+                let value = if (kp_accept(p, ":") == 1) { kp_parse_expr(p) } else { kix_leaf(p.store, "Path", name, fline, fcol, fstart, kp_start(p)) }
+                fields.push(kix_tree(p.store, "FieldInit", name, [value], fline, fcol, fstart, kix_store_get(p.store, value).end))
+                if (kp_accept(p, ",") == 0) { break }
+            }
+            kp_expect(p, "}")
+            let mut children: [i32] = [expr]
+            for (i in 0 .. fields.length) { children.push(fields[i]) }
+            expr = kix_tree(p.store, "RecordLiteral", "", children, base.line, base.col, base.start, stream_end_at(p.stream, p.pos - 1))
+        }
+        elif (kp_accept(p, "[") == 1)
+        {
+            let line = kp_line(p); let col = kp_col(p); let start = kix_store_get(p.store, expr).start
+            let first = if (kp_text(p) == ".." or kp_text(p) == "..=") { -1 } else { kp_parse_binary(p, 5) }
+            let range_op = kp_text(p)
+            if (range_op == ".." or range_op == "..=")
+            {
+                kp_advance(p)
+                let last = if (kp_text(p) == "]") { -1 } else { kp_parse_expr(p) }
+                kp_expect(p, "]")
+                expr = kix_tree(p.store, "Slice", range_op, [expr, first, last], line, col, start, stream_end_at(p.stream, p.pos - 1))
+            }
+            else
+            {
+                kp_expect(p, "]")
+                expr = kix_tree(p.store, "Index", "", [expr, first], line, col, start, stream_end_at(p.stream, p.pos - 1))
+            }
+        }
+        elif (kp_accept(p, "?") == 1)
+        {
+            let base = kix_store_get(p.store, expr)
+            expr = kix_tree(p.store, "Propagate", "?", [expr], base.line, base.col, base.start, stream_end_at(p.stream, p.pos - 1))
+        }
+        else { break }
+    }
+    return expr
+}
+
+pub fn kp_parse_if(p: &KixParser): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+    kp_expect(p, "if")
+    p.stop_at_block = 1
+    let cond = kp_parse_expr(p)
+    p.stop_at_block = 0
+    let then_node = kp_parse_block(p)
+    let mut children: [i32] = [cond, then_node]
+    if (kp_accept(p, "else") == 1)
+    {
+        children.push(if (kp_text(p) == "if") { kp_parse_if(p) } else { kp_parse_block(p) })
+    }
+    return kix_tree(p.store, "If", "", children, line, col, start, kix_store_get(p.store, children[children.length - 1]).end)
+}
+
+pub fn kp_parse_pattern_atom(p: &KixParser): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+    let kind = kp_kind(p)
+    let text = kp_text(p)
+    if (text == "_") { kp_advance(p); return kix_leaf(p.store, "WildcardPattern", "_", line, col, start, kp_end(p)) }
+    if (text == "-" or kind == tk_number() or kind == tk_float() or kind == tk_bool() or kind == tk_string() or kind == tk_raw_string() or kind == tk_byte_string() or kind == tk_char())
+    {
+        let mut literal = ""
+        if (text == "-") { literal = "-"; kp_advance(p) }
+        let literal_kind = kp_kind(p)
+        if (literal_kind != tk_number() and literal_kind != tk_float() and literal_kind != tk_char()) { if (literal != "") { kp_fail(p, "expected numeric literal after '-'"); return -1 } }
+        literal = literal + if (literal_kind == tk_char()) { i32_to_str(stream_int_at(p.stream, p.pos)) } else { kp_text(p) }
+        let end = kp_end(p); kp_advance(p)
+        let first = kix_leaf(p.store, "LiteralPattern", literal, line, col, start, end)
+        if (kp_accept(p, "..=") == 1)
+        {
+            let end_text = if (kp_kind(p) == tk_char()) { i32_to_str(stream_int_at(p.stream, p.pos)) } else { kp_text(p) }
+            let last = kix_leaf(p.store, "LiteralPattern", end_text, kp_line(p), kp_col(p), kp_start(p), kp_end(p))
+            kp_advance(p)
+            return kix_tree(p.store, "RangePattern", "..=", [first, last], line, col, start, kix_store_get(p.store, last).end)
+        }
+        return first
+    }
+    if (kp_accept(p, "(") == 1)
+    {
+        let mut children: [i32] = []
+        while (kp_text(p) != ")" and kp_eof(p) == 0)
+        {
+            children.push(kp_parse_pattern(p, "", ""))
+            if (kp_accept(p, ",") == 0) { break }
+        }
+        kp_expect(p, ")")
+        return kix_tree(p.store, "TuplePattern", "", children, line, col, start, stream_end_at(p.stream, p.pos - 1))
+    }
+    if (kp_accept(p, "[") == 1)
+    {
+        let mut children: [i32] = []
+        while (kp_text(p) != "]" and kp_eof(p) == 0)
+        {
+            children.push(kp_parse_pattern(p, "", ""))
+            if (kp_accept(p, ",") == 0) { break }
+        }
+        kp_expect(p, "]")
+        return kix_tree(p.store, "SlicePattern", "", children, line, col, start, stream_end_at(p.stream, p.pos - 1))
+    }
+    if (kind == tk_ident() or text == "self")
+    {
+        let mut path = text; kp_advance(p)
+        while (kp_accept(p, "::") == 1)
+        {
+            if (kp_kind(p) != tk_ident()) { kp_fail(p, "expected pattern path segment"); return -1 }
+            path = path + "::" + kp_text(p); kp_advance(p)
+        }
+        if (kp_accept(p, "(") == 1)
+        {
+            let mut children: [i32] = []
+            while (kp_text(p) != ")" and kp_eof(p) == 0)
+            {
+                children.push(kp_parse_pattern(p, "", ""))
+                if (kp_accept(p, ",") == 0) { break }
+            }
+            kp_expect(p, ")")
+            return kix_tree(p.store, "VariantPattern", path, children, line, col, start, stream_end_at(p.stream, p.pos - 1))
+        }
+        if (kp_accept(p, "{") == 1)
+        {
+            let mut fields: [i32] = []
+            while (kp_text(p) != "}" and kp_eof(p) == 0)
+            {
+                let fline = kp_line(p); let fcol = kp_col(p); let fstart = kp_start(p); let name = kp_text(p)
+                if (kp_kind(p) != tk_ident()) { kp_fail(p, "expected record pattern field"); return -1 }
+                let fend = kp_end(p); kp_advance(p)
+                let value = if (kp_accept(p, ":") == 1) { kp_parse_pattern(p, "", "") } else { kix_leaf(p.store, "PathPattern", name, fline, fcol, fstart, fend) }
+                fields.push(kix_tree(p.store, "FieldPattern", name, [value], fline, fcol, fstart, kix_store_get(p.store, value).end))
+                if (kp_accept(p, ",") == 0) { break }
+            }
+            kp_expect(p, "}")
+            return kix_tree(p.store, "RecordPattern", path, fields, line, col, start, stream_end_at(p.stream, p.pos - 1))
+        }
+        return kix_leaf(p.store, "PathPattern", path, line, col, start, kp_start(p))
+    }
+    kp_fail(p, "expected pattern, got '" + text + "'")
+    return -1
+}
+
+pub fn kp_parse_pattern(p: &KixParser, stop1: string, stop2: string): i32
+{
+    let first = kp_parse_pattern_atom(p)
+    if (p.ok == 0) { return -1 }
+    if (kp_text(p) != "|") { return first }
+    let node = kix_store_get(p.store, first)
+    let mut choices: [i32] = [first]
+    while (kp_accept(p, "|") == 1) { choices.push(kp_parse_pattern_atom(p)) }
+    return kix_tree(p.store, "OrPattern", "|", choices, node.line, node.col, node.start, kix_store_get(p.store, choices[choices.length - 1]).end)
+}
+
+pub fn kp_parse_match(p: &KixParser): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+    kp_expect(p, "match")
+    p.stop_at_block = 1
+    let subject = kp_parse_expr(p)
+    p.stop_at_block = 0
+    kp_expect(p, "{")
+    let mut children: [i32] = [subject]
+    kp_skip_semis(p)
+    while (kp_text(p) != "}" and kp_eof(p) == 0)
+    {
+        let arm_line = kp_line(p); let arm_col = kp_col(p); let arm_start = kp_start(p)
+        let pattern = kp_parse_pattern(p, "if", "=>")
+        let mut arm_children: [i32] = [pattern]
+        if (kp_accept(p, "if") == 1) { arm_children.push(kp_parse_expr(p)) }
+        kp_expect(p, "=>")
+        arm_children.push(if (kp_text(p) == "{") { kp_parse_block(p) } else { kp_parse_expr(p) })
+        children.push(kix_tree(p.store, "MatchArm", "", arm_children, arm_line, arm_col, arm_start, kix_store_get(p.store, arm_children[arm_children.length - 1]).end))
+        kp_accept(p, ","); kp_skip_semis(p)
+    }
+    kp_expect(p, "}")
+    return kix_tree(p.store, "Match", "", children, line, col, start, stream_end_at(p.stream, p.pos - 1))
+}
+
+pub fn kp_parse_loop(p: &KixParser): i32
+{
+    let keyword = kp_text(p); let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); kp_advance(p)
+    if (keyword == "while")
+    {
+        p.stop_at_block = 1; let cond = kp_parse_expr(p); p.stop_at_block = 0
+        let body = kp_parse_block(p)
+        return kix_tree(p.store, "While", "", [cond, body], line, col, start, kix_store_get(p.store, body).end)
+    }
+    let pattern = kp_parse_pattern(p, "in", "")
+    kp_expect(p, "in")
+    p.stop_at_block = 1; let iter = kp_parse_expr(p); p.stop_at_block = 0
+    let body = kp_parse_block(p)
+    return kix_tree(p.store, "For", "", [pattern, iter, body], line, col, start, kix_store_get(p.store, body).end)
+}
+
+pub fn kp_parse_closure(p: &KixParser): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); kp_expect(p, "fn")
+    let mut generics: [string] = []
+    if (kp_accept(p, "[") == 1)
+    {
+        while (kp_text(p) != "]" and kp_eof(p) == 0) { generics.push(kp_collect_until(p, ",", "]", "")); if (kp_accept(p, ",") == 0) { break } }
+        kp_expect(p, "]")
+    }
+    kp_expect(p, "(")
+    let mut names: [string] = []
+    let mut types: [string] = []
+    while (kp_text(p) != ")" and kp_eof(p) == 0)
+    {
+        names.push(kp_collect_until(p, ":", ",", ")"))
+        if (kp_accept(p, ":") == 1) { types.push(kp_collect_until(p, ",", ")", "")) } else { types.push("") }
+        if (kp_accept(p, ",") == 0) { break }
+    }
+    kp_expect(p, ")")
+    let mut ret = "()"
+    if (kp_accept(p, ":") == 1) { ret = kp_collect_until(p, "=", "{", "") }
+    if (kp_accept(p, "=") == 0 and kp_text(p) != "{") { kp_fail(p, "expected closure body"); return -1 }
+    let body = if (kp_text(p) == "{") { kp_parse_block(p) } else { kp_parse_expr(p) }
+    return kix_store_add(p.store, kix_node_new("Closure", "", ret, [body], [], names, types, 0, line, col, start, kix_store_get(p.store, body).end))
+}
+
+pub fn kp_parse_primary(p: &KixParser): i32
+{
+    let kind = kp_kind(p); let text = kp_text(p); let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); let end = kp_end(p)
+    if (kind == tk_error()) { kp_fail(p, text); return -1 }
+    if (kind == tk_number() or kind == tk_float() or kind == tk_bool() or kind == tk_string() or kind == tk_raw_string() or kind == tk_byte_string() or kind == tk_char())
+    {
+        kp_advance(p)
+        let tag = if (kind == tk_number()) { "IntLiteral" } elif (kind == tk_float()) { "FloatLiteral" } elif (kind == tk_bool()) { "BoolLiteral" } elif (kind == tk_char()) { "CharLiteral" } elif (kind == tk_raw_string()) { "RawStringLiteral" } elif (kind == tk_byte_string()) { "ByteStringLiteral" } else { "StringLiteral" }
+        return kix_leaf(p.store, tag, if (kind == tk_char()) { i32_to_str(stream_int_at(p.stream, p.pos - 1)) } else { text }, line, col, start, end)
+    }
+    if (text == "if") { return kp_parse_if(p) }
+    if (text == "match") { return kp_parse_match(p) }
+    if (text == "while" or text == "for") { return kp_parse_loop(p) }
+    if (text == "fn") { return kp_parse_closure(p) }
+    if (text == "{") { return kp_parse_block(p) }
+    if (kp_accept(p, "(") == 1)
+    {
+        if (kp_accept(p, ")") == 1) { return kix_leaf(p.store, "UnitLiteral", "()", line, col, start, stream_end_at(p.stream, p.pos - 1)) }
+        let first = kp_parse_expr(p)
+        if (kp_accept(p, ",") == 1)
+        {
+            let mut elems: [i32] = [first]
+            while (kp_text(p) != ")") { elems.push(kp_parse_expr(p)); if (kp_accept(p, ",") == 0) { break } }
+            kp_expect(p, ")")
+            return kix_tree(p.store, "TupleLiteral", "", elems, line, col, start, stream_end_at(p.stream, p.pos - 1))
+        }
+        kp_expect(p, ")")
+        return first
+    }
+    if (kp_accept(p, "[") == 1)
+    {
+        let mut elems: [i32] = []
+        while (kp_text(p) != "]" and kp_eof(p) == 0) { elems.push(kp_parse_expr(p)); if (kp_accept(p, ",") == 0) { break } }
+        kp_expect(p, "]")
+        return kix_tree(p.store, "ArrayLiteral", "", elems, line, col, start, stream_end_at(p.stream, p.pos - 1))
+    }
+    if (kind == tk_ident() or text == "self")
+    {
+        kp_advance(p)
+        let mut path = text
+        while (kp_accept(p, "::") == 1) { path = path + "::" + kp_text(p); kp_advance(p) }
+        let base = kix_leaf(p.store, "Path", path, line, col, start, end)
+        if (p.stop_at_block == 0 and kp_accept(p, "{") == 1)
+        {
+            let mut fields: [i32] = []
+            while (kp_text(p) != "}" and kp_eof(p) == 0)
+            {
+                let fline = kp_line(p); let fcol = kp_col(p); let fstart = kp_start(p); let name = kp_text(p); kp_advance(p)
+                let value = if (kp_accept(p, ":") == 1) { kp_parse_expr(p) } else { kix_leaf(p.store, "Path", name, fline, fcol, fstart, kp_start(p)) }
+                fields.push(kix_tree(p.store, "FieldInit", name, [value], fline, fcol, fstart, kix_store_get(p.store, value).end))
+                if (kp_accept(p, ",") == 0) { break }
+            }
+            kp_expect(p, "}")
+            let mut children: [i32] = [base]
+            for (i in 0 .. fields.length) { children.push(fields[i]) }
+            return kix_tree(p.store, "RecordLiteral", path, children, line, col, start, stream_end_at(p.stream, p.pos - 1))
+        }
+        return base
+    }
+    kp_fail(p, "expected expression, got '" + text + "'")
+    return -1
+}
+
+pub fn kp_parse_stmt(p: &KixParser): i32
+{
+    let text = kp_text(p); let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+    if (text == "let")
+    {
+        kp_advance(p)
+        let mut mutable = 0
+        if (kp_accept(p, "mut") == 1) { mutable = 1 }
+        let pattern = kp_parse_pattern(p, ":", "=")
+        let mut ty = ""
+        if (kp_accept(p, ":") == 1) { ty = kp_collect_until(p, "=", "", "") }
+        kp_expect(p, "=")
+        let value = kp_parse_expr(p)
+        let mut children: [i32] = [pattern, value]
+        if (kp_accept(p, "else") == 1) { children.push(kp_parse_block(p)) }
+        kp_accept(p, ";")
+        return kix_store_add(p.store, kix_node_new("Let", "", ty, children, [], [], [], mutable, line, col, start, kix_store_get(p.store, children[children.length - 1]).end))
+    }
+    if (text == "return" or text == "break" or text == "continue")
+    {
+        kp_advance(p)
+        let mut children: [i32] = []
+        if (text != "continue" and kp_text(p) != ";" and kp_text(p) != "}") { children.push(kp_parse_expr(p)) }
+        kp_accept(p, ";")
+        return kix_tree(p.store, if (text == "return") { "Return" } elif (text == "break") { "Break" } else { "Continue" }, "", children, line, col, start, kp_start(p))
+    }
+    let expr = kp_parse_expr(p)
+    kp_expect(p, ";")
+    return kix_tree(p.store, "ExprStmt", "", [expr], line, col, start, kix_store_get(p.store, expr).end)
+}
+
+pub fn kp_parse_block(p: &KixParser): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p)
+    kp_expect(p, "{")
+    let mut children: [i32] = []
+    let mut tail = -1
+    kp_skip_semis(p)
+    while (kp_text(p) != "}" and kp_eof(p) == 0 and p.ok == 1)
+    {
+        let text = kp_text(p)
+        if (text == "let" or text == "return" or text == "break" or text == "continue") { children.push(kp_parse_stmt(p)); kp_skip_semis(p); continue }
+        let line2 = kp_line(p); let col2 = kp_col(p); let start2 = kp_start(p)
+        let expr = kp_parse_expr(p)
+        if (kp_accept(p, ";") == 1) { children.push(kix_tree(p.store, "ExprStmt", "", [expr], line2, col2, start2, kix_store_get(p.store, expr).end)); kp_skip_semis(p) }
+        else { tail = expr; break }
+    }
+    kp_expect(p, "}")
+    if (tail >= 0) { children.push(tail) }
+    return kix_store_add(p.store, kix_node_new("Block", "", "", children, [], [], [], if (tail >= 0) { 1 } else { 0 }, line, col, start, stream_end_at(p.stream, p.pos - 1)))
+}
+
+pub fn kp_parse_generics(p: &KixParser): [string]
+{
+    let mut out: [string] = []
+    if (kp_accept(p, "[") == 0) { return out }
+    while (kp_text(p) != "]" and kp_eof(p) == 0) { out.push(kp_collect_until(p, ",", "]", "")); if (kp_accept(p, ",") == 0) { break } }
+    kp_expect(p, "]")
+    return out
+}
+
+pub fn kp_parse_fn(p: &KixParser, attrs: [i32], is_pub: i32): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); kp_expect(p, "fn")
+    let name = kp_text(p)
+    if (kp_kind(p) != tk_ident()) { kp_fail(p, "expected function name"); return -1 }
+    kp_advance(p)
+    let generics = kp_parse_generics(p)
+    kp_expect(p, "(")
+    let mut names: [string] = []
+    let mut types: [string] = []
+    while (kp_text(p) != ")" and kp_eof(p) == 0)
+    {
+        let parameter = kp_collect_until(p, ":", ",", ")")
+        names.push(parameter)
+        if (kp_accept(p, ":") == 1) { types.push(kp_collect_until(p, ",", ")", "")) }
+        elif (parameter == "self" or parameter == "mut self") { types.push("Self") }
+        else { kp_fail(p, "named function parameters require a type"); return -1 }
+        if (kp_accept(p, ",") == 0) { break }
+    }
+    kp_expect(p, ")")
+    let mut ret = "()"
+    if (kp_accept(p, ":") == 1) { ret = kp_collect_return_type(p) }
+    // A newline before an opening function brace is lexed as a semicolon by
+    // the context-free newline rules. Accept it here because the declaration
+    // is syntactically incomplete until it has a body (or remains a signature).
+    kp_skip_semis(p)
+    let mut children: [i32] = []
+    if (kp_accept(p, "=") == 1) { children.push(kp_parse_expr(p)); kp_accept(p, ";") }
+    elif (kp_text(p) == "{") { children.push(kp_parse_block(p)) }
+    else { kp_accept(p, ";") }
+    let mut node = kix_node_new("Function", name, ret, children, attrs, names, types, is_pub, line, col, start, kp_start(p))
+    node.names = names
+    node.types = types
+    for (i in 0 .. generics.length) { node.names.push("[" + generics[i] + "]") }
+    return kix_store_add(p.store, node)
+}
+
+pub fn kp_parse_record_fields(p: &KixParser): [i32]
+{
+    let mut fields: [i32] = []
+    kp_expect(p, "{")
+    while (kp_text(p) != "}" and kp_eof(p) == 0)
+    {
+        let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); let name = kp_text(p); kp_advance(p)
+        kp_expect(p, ":")
+        let ty = kp_collect_until(p, ",", "}", "")
+        fields.push(kix_leaf(p.store, "Field", name + ":" + ty, line, col, start, kp_start(p)))
+        if (kp_accept(p, ",") == 0) { break }
+    }
+    kp_expect(p, "}")
+    return fields
+}
+
+pub fn kp_parse_type_decl(p: &KixParser, attrs: [i32], is_pub: i32): i32
+{
+    let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); kp_expect(p, "type")
+    let name = kp_text(p); kp_advance(p)
+    let generics = kp_parse_generics(p)
+    kp_expect(p, "=")
+    let mut children: [i32] = []
+    let mut kind = "Alias"
+    if (kp_text(p) == "{") { kind = "Record"; children = kp_parse_record_fields(p) }
+    elif (kp_text(p) == "|" or (kp_kind(p) == tk_ident() and (stream_text_at(p.stream, p.pos + 1) == "|" or stream_text_at(p.stream, p.pos + 1) == "(" or stream_text_at(p.stream, p.pos + 1) == "{")))
+    {
+        kind = "Sum"; kp_accept(p, "|")
+        while (kp_eof(p) == 0)
+        {
+            let vline = kp_line(p); let vcol = kp_col(p); let vstart = kp_start(p); let variant = kp_text(p); kp_advance(p)
+            let mut payload: [i32] = []
+            if (kp_accept(p, "(") == 1)
+            {
+                while (kp_text(p) != ")") { let ty = kp_collect_until(p, ",", ")", ""); payload.push(kix_leaf(p.store, "Type", ty, vline, vcol, vstart, kp_start(p))); if (kp_accept(p, ",") == 0) { break } }
+                kp_expect(p, ")")
+            }
+            elif (kp_text(p) == "{") { payload = kp_parse_record_fields(p) }
+            children.push(kix_tree(p.store, "Variant", variant, payload, vline, vcol, vstart, kp_start(p)))
+            if (kp_accept(p, "|") == 0) { break }
+        }
+    }
+    else { let ty = kp_collect_until(p, ";", "", ""); children.push(kix_leaf(p.store, "Type", ty, line, col, start, kp_start(p))) }
+    kp_accept(p, ";")
+    return kix_store_add(p.store, kix_node_new("TypeDecl", name, kind, children, attrs, generics, [], is_pub, line, col, start, kp_start(p)))
+}
+
+pub fn kp_parse_container(p: &KixParser, attrs: [i32], is_pub: i32): i32
+{
+    let keyword = kp_text(p); let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); kp_advance(p)
+    let header = kp_collect_until(p, "{", "", "")
+    kp_expect(p, "{")
+    let mut methods: [i32] = []
+    kp_skip_semis(p)
+    while (kp_text(p) != "}" and kp_eof(p) == 0)
+    {
+        let mut method_attrs: [i32] = []
+        while (kp_text(p) == "#") { method_attrs.push(kp_parse_attr(p)); kp_skip_semis(p) }
+        if (kp_text(p) != "fn") { kp_fail(p, "only methods are supported in " + keyword + " blocks"); break }
+        methods.push(kp_parse_fn(p, method_attrs, 0)); kp_skip_semis(p)
+    }
+    kp_expect(p, "}")
+    return kix_store_add(p.store, kix_node_new(if (keyword == "trait") { "TraitDecl" } else { "ImplDecl" }, header, "", methods, attrs, [], [], is_pub, line, col, start, kp_start(p)))
+}
+
+pub fn kp_parse_path_item(p: &KixParser, attrs: [i32], is_pub: i32): i32
+{
+    let keyword = kp_text(p); let line = kp_line(p); let col = kp_col(p); let start = kp_start(p); kp_advance(p)
+    let path = kp_collect_until(p, ";", "", "")
+    kp_accept(p, ";")
+    return kix_store_add(p.store, kix_node_new(if (keyword == "mod") { "ModDecl" } else { "UseDecl" }, path, "", [], attrs, [], [], is_pub, line, col, start, kp_start(p)))
+}
+
+pub fn parse_kix_program(src: string, filename: string): KixProgram
+{
+    let p = kp_new(src)
+    let mut items: [i32] = []
+    let mut module_docs: [i32] = []
+    kp_skip_semis(&p)
+    while (kp_eof(&p) == 0 and p.ok == 1)
+    {
+        let mut attrs: [i32] = []
+        while (kp_kind(&p) == tk_doc_comment() or kp_text(&p) == "#")
+        {
+            if (kp_kind(&p) == tk_doc_comment())
+            {
+                let doc = kix_store_add(p.store, kix_node_new(if (stream_int_at(p.stream, p.pos) == 1) { "ModuleDoc" } else { "Doc" }, kp_text(&p), "", [], [], [], [], 0, kp_line(&p), kp_col(&p), kp_start(&p), kp_end(&p)))
+                if (stream_int_at(p.stream, p.pos) == 1) { module_docs.push(doc) } else { attrs.push(doc) }
+                kp_advance(&p)
+            }
+            else { attrs.push(kp_parse_attr(&p)) }
+            kp_skip_semis(&p)
+        }
+        let is_pub = kp_accept(&p, "pub")
+        let keyword = kp_text(&p)
+        if (keyword == "fn") { items.push(kp_parse_fn(&p, attrs, is_pub)) }
+        elif (keyword == "type") { items.push(kp_parse_type_decl(&p, attrs, is_pub)) }
+        elif (keyword == "trait" or keyword == "impl") { items.push(kp_parse_container(&p, attrs, is_pub)) }
+        elif (keyword == "mod" or keyword == "use") { items.push(kp_parse_path_item(&p, attrs, is_pub)) }
+        else { kp_fail(&p, "expected item, got '" + keyword + "'") }
+        kp_skip_semis(&p)
+    }
+    if (p.ok == 0) { return kix_program_error(p.error + " in " + filename, p.store) }
+    return kix_program_ok(items, module_docs, p.store)
+}

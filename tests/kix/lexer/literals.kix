@@ -1,0 +1,6 @@
+/// item docs
+//! module docs
+/* outer /* nested */ done */
+0 42 1_000 0xff 0o17 0b1010 255u8 9i64
+1.5 6.02e23 1e-3 3.0f32
+'a' '\n' '\u{1F600}' "line\ntext\u{41}" r"raw\ntext" b"bytes\t"

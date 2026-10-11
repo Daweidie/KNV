@@ -168,6 +168,7 @@ fn print_help(): i32
     print("  -l<lib>, -l <lib>      Link executable with a system library")
     print("  -L<dir>, -L <dir>      Add a system library search path")
     print("  --check                Syntax & type check only")
+    print("  --lang=<vix|kix>       Select source language (Kix supports lex/check/AST)")
     print("  --ownership-check      Run the experimental ownership checker")
     print("  --diag-test            Emit the stable diagnostic snapshot protocol")
     print("  --diag-format=<human|short|json> Select diagnostic output format")
@@ -207,7 +208,7 @@ fn print_error_explanation(code: string): i32
 
 fn source_file_arg(arg: string): ?string
 {
-    if (string_ends_with(arg, ".vix") == 1 or string_ends_with(arg, ".vic") == 1) { return Some(arg) }
+    if (string_ends_with(arg, ".vix") == 1 or string_ends_with(arg, ".vic") == 1 or string_ends_with(arg, ".kix") == 1) { return Some(arg) }
     return None
 }
 
@@ -327,14 +328,15 @@ fn run_mode_mir(mode: string, mir: string, filename: string, emit: string, outpu
     return mode_success()
 }
 
-fn run_mode(mode: string, src: string, filename: string, emit: string, output: string, runtime_object: string, link_args: string, target_triple: string, backend: string, optimize_mir: i32, opt_level: i32): ?i32
+fn run_mode(mode: string, src: string, filename: string, emit: string, output: string, runtime_object: string, link_args: string, target_triple: string, backend: string, optimize_mir: i32, opt_level: i32, language: string): ?i32
 {
     let no_std = vix_api_source_has_no_std(src)
 
     match mode
     {
         "--lex" -> {
-            info_print(tokenize_debug(src))
+            info_print(if (language == "kix") { tokenize_kix_debug(src) } else { tokenize_debug(src) })
+            if (language == "kix" and tokenize_kix_has_error(src) == 1) { return mode_failure() }
             return mode_success()
         }
         "--parse-stats" -> {
@@ -347,6 +349,24 @@ fn run_mode(mode: string, src: string, filename: string, emit: string, output: s
             return mode_success()
         }
         _ -> {}
+    }
+
+    if (language == "kix")
+    {
+        if (mode == "--ast" or mode == "-ast" or mode == "--ast-json" or mode == "--parser" or mode == "--check")
+        {
+            let kix_program = parse_kix_program(src, filename)
+            if (kix_program.ok == 0)
+            {
+                diag_print(kix_program.error)
+                return mode_failure()
+            }
+            if (mode == "--ast-json") { info_print(kix_ast_json(kix_program)) }
+            elif (mode != "--check") { info_print(kix_ast_debug(kix_program)) }
+            return mode_success()
+        }
+        diag_print("vixc: error: Kix semantic analysis and code generation are not implemented yet; use '--check' or '--ast-json'")
+        return mode_failure()
     }
 
     let program = parse_program(src, filename)
@@ -714,6 +734,7 @@ fn main(argc: i32, argv: &string): i32
     let mut diag_format = 0
     let mut diag_color = 0
     let mut diag_test_mode = 0
+    let mut language = "auto"
 
     vix_diag_configure(diag_format, diag_color, diag_test_mode)
 
@@ -747,6 +768,15 @@ fn main(argc: i32, argv: &string): i32
                 return 1
             }
             vix_diag_configure(diag_format, diag_color, diag_test_mode)
+        }
+        elif (str_starts_with(arg, "--lang=") == 1)
+        {
+            language = slice_string(arg, 7, arg.length)
+            if (language != "vix" and language != "kix")
+            {
+                diag_print("vixc: error: unknown source language '" + language + "'")
+                return 1
+            }
         }
         elif (str_starts_with(arg, "--color=") == 1)
         {
@@ -968,6 +998,11 @@ fn main(argc: i32, argv: &string): i32
         return 1
     }
 
+    if (language == "auto")
+    {
+        language = if (string_ends_with(filename, ".kix") == 1) { "kix" } else { "vix" }
+    }
+
     if (string_ends_with(filename, ".vic") == 1 and backend == "llvm") { backend = "self" }
 
     if (emit == "bin" and target_triple != "boot16")
@@ -997,7 +1032,7 @@ fn main(argc: i32, argv: &string): i32
         }
     }
 
-    match run_mode(mode, src, filename, emit, output, runtime_object_path(argv[0]), link_args, target_triple, backend, optimize_mir, opt_level)
+    match run_mode(mode, src, filename, emit, output, runtime_object_path(argv[0]), link_args, target_triple, backend, optimize_mir, opt_level, language)
     {
         Some(code) -> return code
         None -> return 0

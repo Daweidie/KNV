@@ -1,0 +1,5 @@
+fn broken(value: Int): Int {
+    match value {
+        Some(value) value
+    }
+}

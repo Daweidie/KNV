@@ -1,82 +1,153 @@
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="images/README/image.png">
-    <source media="(prefers-color-scheme: light)" srcset="images/README/image.png">
-    <img
-      alt="Vix Programming Language"
-      src="images/README/image.png"
-      width="50%">
-  </picture>
+# Kix Not Vix
 
-[Website][Vix] | [Getting Started][Getting Started] | [Learn][Learn] | [Documentation][Documentation] | [Contributing][Contributing]
-</div>
-This is the main source repository for Vix It contains the compiler,
-runtime-related components, examples, and language documentation.
+Kix 是一门正在实现中的静态类型系统语言。项目目标是用少量、统一、可判定的规则，构建一门适合人类阅读、工具分析和长期演进的原生语言。
 
-[Vix]: https://vixlang.github.io
-[Getting Started]: Docs/en/getting-started.md
-[Learn]: Docs/en/what-is-vix.md
-[Documentation]: Docs/en/syntax.md
-[Contributing]: https://github.com/vixlang/Vix-lang/issues
+仓库代号 **KNV**，即 **Kix Not Vix**。Kix 借鉴 Vix 编译器的工程经验和 LLVM 后端，但拥有独立的词法、语法和 AST，不继承 Vix 的语言兼容限制。
 
+## 当前状态
 
-> 🎉 🎉 🎉 Vix is fully self-hosted! The compiler now compiles itself. No external dependencies. Next: stdlib, packages, and tooling 🚀
+项目处于 Stage 0：编译器主体仍使用 Vix 编写，并由上一级目录的只读 `../Vix-lang` 作为启动编译器构建。
 
+已经实现：
 
+- Kix 独立 lexer，并保留 Vix 兼容模式；
+- 嵌套块注释、文档注释、进制数字、指数浮点数、raw/byte string；
+- 确定性的换行终止规则；
+- Kix parser 和独立 arena AST；
+- 函数、统一 `type` 声明、trait、impl、mod、use 和属性；
+- 表达式块、无括号 `if`、`match`、循环、闭包和 `let-else`；
+- 泛型调用、记录构造、索引、切片、范围、管道、`?` 和 `??`；
+- 结构化模式以及文本、JSON AST 输出；
+- 字段、索引和解引用 place 的 `&` / `&mut` 借用 AST。
 
-> This branch is an experimental bootstrap branch, and it's not recommended to download it for now. If you want to use vix, please go to: https://github.com/vixlang/Vix-lang
+仍在实现：
 
+- Kix 名字解析、类型检查和 trait/impl 语义；
+- match 穷尽性和借用检查；
+- Kix AST 到现有 Vix/LLVM 后端的 lowering；
+- `kixc build|run|check|ast` 的最终命令界面；
+- 使用 Kix 源码完成固定点自举。
 
-## Why Vix?
+当前 `build/kixc-stage0 --check` 只做 Kix 词法和语法检查，尚不代表类型检查已经完成。
 
-- **Performance:** Vix compiles to native code with an LLVM-based backend and is designed for low-overhead execution.
+## 语法概览
 
-- **Reliability:** Static typing and compile-time checks catch common errors earlier.
+```kix
+type Shape =
+    | Circle { radius: f64 }
+    | Rect { width: f64, height: f64 }
+    | Dot
 
-- **Simplicity:** The language keeps syntax concise while still supporting practical features like functions, modules, structs, pointers, generics, and control flow.
+trait Area {
+    fn area(self): f64
+}
 
-## Hello world
+impl Area for Shape {
+    fn area(self): f64 = match self {
+        Circle { radius } => 3.14159 * radius * radius
+        Rect { width, height } => width * height
+        Dot => 0.0
+    }
+}
 
-``` vix
-import "std/io.vix"
-fn main(): i32
-{
-    puts("Hello,world!")
-    return 0
+fn id[T](value: T): T = value
+
+fn fib(n: Int): Int {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main(): Int {
+    let shape = Circle { radius: 2.0 }
+    let value = id[f64](shape.area())
+    print(value)
+    0
 }
 ```
 
-## Documentation
+Kix 的主要规则：
 
-- LearnVix:[GitHub Link](https://github.com/vixlang/LearnVix)
-- VixDocs:[GitHub Link](https://github.com/vixlang/LearnVix)
-- VixDocs for ZRead:[Link](https://zread.ai/vixlang/Vix-lang)
+- 返回类型使用 `:`，match 分支使用 `=>`，`->` 保留；
+- `if`、`match` 和块都是表达式，块尾表达式就是块的值；
+- 泛型写作 `id[T]` 和 `Box[T]`；
+- 记录、别名和求和类型统一使用 `type`；
+- 借用只使用 `&` 和 `&mut`；
+- `print`、类型名以及 `and`/`or` 不是关键字；
+- `Option`、`Result` 及其构造子是普通类型和普通构造子。
 
-## Getting Help
+## 构建
 
-- Open a discussion in [GitHub Issues](https://github.com/Daweidie/vix-lang/issues).
-- Contact: [popolk1871@outlook.com](mailto:popolk1871@outlook.com)
-- QQ Group: 130577506
+系统需要 LLVM、Clang、LLD 和 Python 3。本机验证版本为 LLVM 23.1.1。
 
-## Contributing
+`../Vix-lang` 中的预编译程序依赖 LLVM 21/22。构建脚本只读取它的 seed IR 和支持源码，在 KNV 的 `build/` 内重新链接，不会修改 `Vix-lang`。
 
-Contributions are welcome, including language design feedback, bug reports,
-tests, standard library improvements, and documentation updates.
+```sh
+sh scripts/build-vixc-host.sh
+./build/vixc-host --version
 
-To start contributing, please open or pick an issue:
-[vix-lang issues](https://github.com/Daweidie/vix-lang/issues)
+sh scripts/build-kixc-stage0.sh
+./build/kixc-stage0 --version
+```
 
-## License
+默认位置可以通过环境变量覆盖：
 
-Vix is distributed under the Apache License 2.0.
-See [LICENSE](LICENSE) for details.
+```sh
+VIX_HOME=/path/to/Vix-lang sh scripts/build-vixc-host.sh
+```
 
-## Ecosystem
+## 使用
 
-| Project               | Description                                            | Status                                                           |
-| -----------------------| --------------------------------------------------------| ------------------------------------------------------------------|
-| **Vix Compiler**      | Core compiler with LLVM-focused backend implementation | In active development                                            |
-| **Very**              | Package manager for Vix                                | Community contribution [Very](https://github.com/vixlang/Very)   |
-| **Standard Library**  | Common APIs and utilities                              | Community contribution                                           |
-| **VS Code Extension** | Editor support for Vix                                 | Published [Link](https://github.com/vixlang/ext-VixLangAnalyzer) |
+```sh
+# 自动根据 .kix 扩展名选择 Kix
+./build/kixc-stage0 --lex program.kix
+./build/kixc-stage0 --check program.kix
+./build/kixc-stage0 --ast program.kix
+./build/kixc-stage0 --ast-json program.kix
 
+# 也可以显式选择语言
+./build/kixc-stage0 --lang=kix --check program.kix
+./build/kixc-stage0 --lang=vix --check program.vix
+```
+
+Kix 语义分析和代码生成尚未接通，因此目前不能把 `.kix` 编译为可执行文件。Vix 模式仍可使用既有后端。
+
+## 测试
+
+```sh
+python3 tests/kix/run_lexer.py --compiler build/kixc-stage0
+python3 tests/kix/run_parser.py --compiler build/kixc-stage0
+
+# Vix 兼容回归
+python3 tests/syntax_tests.py build/kixc-stage0
+```
+
+解析器测试覆盖主要语法、结构化模式、错误诊断和复合 place 借用。借用用例确认以下结构不会退化为单一变量名：
+
+```kix
+let field = &point.x
+let item = &mut items[0]
+let target = &*pointer
+```
+
+## 目录
+
+```text
+src/                  Stage 0 编译器源码
+src/kix_ast.vix       Kix AST
+src/kix_parser.vix    Kix parser
+tests/kix/            Kix lexer/parser 回归测试
+scripts/              LLVM 23 host 与 kixc-stage0 构建脚本
+seed/                 KNV 内保留的只读 Vix seed
+```
+
+所有 Kix 实现改动和构建产物都留在 KNV。`../Vix-lang` 只承担只读启动编译器职责。
+
+## 路线
+
+1. 完成名字解析、类型系统、模式绑定和诊断。
+2. 完成 `Option`/`Result`、`?`、`??`、trait/impl 和 match 穷尽性。
+3. 将 Kix AST lowering 到现有中间表示，复用 LLVM 后端。
+4. 打通 hello、fib、ADT/match、泛型、循环和错误传播程序。
+5. 用 Kix 重写编译器并完成固定点自举。
+
+功能只有在对应测试通过后才视为已经实现。

@@ -1,6 +1,10 @@
 build/compiler_gc.o
 build/vixc-seed.o
 build/vixc-seed-gc
+/build/host/
+/build/kixc-stage0
+/build/kixc-stage0.o
+/build/vixc-host
 /test
 /test.vix
 /tests/bin/

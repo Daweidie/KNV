@@ -1,0 +1,28 @@
+type Expr =
+    | Num(f64)
+    | Add(Box[Expr], Box[Expr])
+    | Mul(Box[Expr], Box[Expr])
+
+trait Eval { fn eval(self): f64 }
+
+impl Eval for Expr {
+    fn eval(self): f64 = match self {
+        Num(n) => n
+        Add(l, r) => l.eval() + r.eval()
+        Mul(l, r) => l.eval() * r.eval()
+    }
+}
+
+fn id[T](value: T): T = value
+
+fn fib(n: Int): Int {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main(): Int {
+    let e = Add(Box[Expr] { value: Num(1.0) }, Box[Expr] { value: Num(2.0) })
+    let r = id[f64](e.eval())
+    if r == 3.0 { print("ok") } else { print("bad") }
+    0
+}

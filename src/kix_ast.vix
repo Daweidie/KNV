@@ -1,0 +1,156 @@
+#[no_main]
+import "lexer.vix"
+
+// Kix uses a separate arena during the dual-language bootstrap.  A compact
+// generic node keeps the seed-written implementation extensible without
+// changing the established Vix AST or its backend consumers.
+pub type KixNode = struct {
+    tag: string,
+    text: string,
+    aux: string,
+    children: [i32],
+    attrs: [i32],
+    names: [string],
+    types: [string],
+    flag: i32,
+    line: i32,
+    col: i32,
+    start: i32,
+    end: i32
+}
+
+pub type KixNodeStore = struct { nodes: [KixNode] }
+
+pub type KixProgram = struct {
+    items: [i32],
+    module_docs: [i32],
+    store: KixNodeStore,
+    ok: i32,
+    error: string
+}
+
+pub fn kix_store_new(): KixNodeStore => KixNodeStore{ nodes: [] }
+
+pub fn kix_node_new(tag: string, text: string, aux: string, children: [i32], attrs: [i32], names: [string], types: [string], flag: i32, line: i32, col: i32, start: i32, end: i32): KixNode
+{
+    return KixNode{ tag: tag, text: text, aux: aux, children: children, attrs: attrs, names: names, types: types, flag: flag, line: line, col: col, start: start, end: end }
+}
+
+pub fn kix_store_add(store: &KixNodeStore, node: KixNode): i32
+{
+    let id = store.nodes.length
+    store.nodes.push(node)
+    return id
+}
+
+pub fn kix_store_get(store: &KixNodeStore, id: i32): KixNode => store.nodes[id]
+
+pub fn kix_leaf(store: &KixNodeStore, tag: string, text: string, line: i32, col: i32, start: i32, end: i32): i32
+{
+    return kix_store_add(store, kix_node_new(tag, text, "", [], [], [], [], 0, line, col, start, end))
+}
+
+pub fn kix_tree(store: &KixNodeStore, tag: string, text: string, children: [i32], line: i32, col: i32, start: i32, end: i32): i32
+{
+    return kix_store_add(store, kix_node_new(tag, text, "", children, [], [], [], 0, line, col, start, end))
+}
+
+pub fn kix_program_ok(items: [i32], module_docs: [i32], store: KixNodeStore): KixProgram
+{
+    return KixProgram{ items: items, module_docs: module_docs, store: store, ok: 1, error: "" }
+}
+
+pub fn kix_program_error(message: string, store: KixNodeStore): KixProgram
+{
+    return KixProgram{ items: [], module_docs: [], store: store, ok: 0, error: message }
+}
+
+pub fn kix_ast_escape(text: string): string
+{
+    let mut out = ""
+    for (i in 0 .. text.length)
+    {
+        let c = compiler_string_byte(text, i)
+        if (c == 34) { out = out + "\\\"" }
+        elif (c == 92) { out = out + "\\\\" }
+        elif (c == 10) { out = out + "\\n" }
+        elif (c == 9) { out = out + "\\t" }
+        elif (c == 13) { out = out + "\\r" }
+        else { out = out + char_string(c) }
+    }
+    return out
+}
+
+pub fn kix_ast_node_json(store: &KixNodeStore, id: i32): string
+{
+    if (id < 0) { return "null" }
+    let node = kix_store_get(store, id)
+    let mut out = "{\"kind\":\"" + kix_ast_escape(node.tag) + "\""
+    if (node.text != "") { out = out + ",\"text\":\"" + kix_ast_escape(node.text) + "\"" }
+    if (node.aux != "") { out = out + ",\"aux\":\"" + kix_ast_escape(node.aux) + "\"" }
+    out = out + ",\"span\":{\"line\":" + i32_to_str(node.line) + ",\"column\":" + i32_to_str(node.col) + ",\"start\":" + i32_to_str(node.start) + ",\"end\":" + i32_to_str(node.end) + "}"
+    if (node.attrs.length > 0)
+    {
+        out = out + ",\"attributes\":["
+        for (i in 0 .. node.attrs.length) { if (i > 0) { out = out + "," }; out = out + kix_ast_node_json(store, node.attrs[i]) }
+        out = out + "]"
+    }
+    if (node.names.length > 0)
+    {
+        out = out + ",\"names\":["
+        for (i in 0 .. node.names.length) { if (i > 0) { out = out + "," }; out = out + "\"" + kix_ast_escape(node.names[i]) + "\"" }
+        out = out + "]"
+    }
+    if (node.types.length > 0)
+    {
+        out = out + ",\"types\":["
+        for (i in 0 .. node.types.length) { if (i > 0) { out = out + "," }; out = out + "\"" + kix_ast_escape(node.types[i]) + "\"" }
+        out = out + "]"
+    }
+    if (node.children.length > 0)
+    {
+        out = out + ",\"children\":["
+        for (i in 0 .. node.children.length) { if (i > 0) { out = out + "," }; out = out + kix_ast_node_json(store, node.children[i]) }
+        out = out + "]"
+    }
+    return out + "}"
+}
+
+pub fn kix_ast_json(program: KixProgram): string
+{
+    if (program.ok == 0) { return "{\"kind\":\"ParseError\",\"message\":\"" + kix_ast_escape(program.error) + "\"}" }
+    let mut out = "{\"kind\":\"Program\",\"module_docs\":["
+    for (i in 0 .. program.module_docs.length) { if (i > 0) { out = out + "," }; out = out + kix_ast_node_json(program.store, program.module_docs[i]) }
+    out = out + "],\"items\":["
+    for (i in 0 .. program.items.length) { if (i > 0) { out = out + "," }; out = out + kix_ast_node_json(program.store, program.items[i]) }
+    return out + "]}"
+}
+
+pub fn kix_ast_indent(depth: i32): string
+{
+    let mut out = ""
+    for (i in 0 .. depth) { out = out + "  " }
+    return out
+}
+
+pub fn kix_ast_node_debug(store: &KixNodeStore, id: i32, depth: i32): string
+{
+    if (id < 0) { return kix_ast_indent(depth) + "<none>" }
+    let node = kix_store_get(store, id)
+    let mut out = kix_ast_indent(depth) + node.tag
+    if (node.text != "") { out = out + " " + node.text }
+    if (node.aux != "") { out = out + " : " + node.aux }
+    out = out + " @" + i32_to_str(node.line) + ":" + i32_to_str(node.col)
+    for (i in 0 .. node.attrs.length) { out = out + "\n" + kix_ast_node_debug(store, node.attrs[i], depth + 1) }
+    for (i in 0 .. node.children.length) { out = out + "\n" + kix_ast_node_debug(store, node.children[i], depth + 1) }
+    return out
+}
+
+pub fn kix_ast_debug(program: KixProgram): string
+{
+    if (program.ok == 0) { return program.error }
+    let mut out = "Program"
+    for (i in 0 .. program.module_docs.length) { out = out + "\n" + kix_ast_node_debug(program.store, program.module_docs[i], 1) }
+    for (i in 0 .. program.items.length) { out = out + "\n" + kix_ast_node_debug(program.store, program.items[i], 1) }
+    return out
+}

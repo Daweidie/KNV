@@ -1,0 +1,24 @@
+1:1 item-doc ' item docs'
+2:1 module-doc ' module docs'
+4:1 int '0' value=0
+4:3 int '42' value=42
+4:6 int '1_000' value=1000
+4:12 int '0xff' value=255
+4:17 int '0o17' value=15
+4:22 int '0b1010' value=10
+4:29 int '255u8' value=255
+4:35 int '9i64' value=9
+4:39 symbol ';'
+5:1 float '1.5'
+5:5 float '6.02e23'
+5:13 float '1e-3'
+5:18 float '3.0f32'
+5:24 symbol ';'
+6:1 char value=97
+6:5 char value=10
+6:10 char value=128512
+6:22 string 'line\ntext\\u{41}'
+6:41 raw-string 'raw\\ntext'
+6:54 byte-string 'bytes\t'
+6:64 symbol ';'
+7:1 eof

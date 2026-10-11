@@ -1,0 +1,15 @@
+let a = 1 +
+    2
+let b = compute()
+    .map(g)
+    .unwrap()
+let c = (
+    1 +
+    2
+)
+if ready {
+    step()
+    finish()
+} else {
+    recover()
+}

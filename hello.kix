@@ -1,0 +1,5 @@
+fn main(): Int
+{
+    print("Hello world")
+    0
+}
