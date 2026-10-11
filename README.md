@@ -1,16 +1,44 @@
-# Kix Not Vix
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/README/image.png">
+    <source media="(prefers-color-scheme: light)" srcset="images/README/image.png">
+    <img
+      alt="Kix Programming Language"
+      src="images/README/image.png"
+      width="50%">
+  </picture>
 
-Kix 是一门正在实现中的静态类型系统语言。项目目标是用少量、统一、可判定的规则，构建一门适合人类阅读、工具分析和长期演进的原生语言。
+[当前状态](#当前状态) | [语法速览](#语法速览) | [构建](#构建) | [使用](#使用) | [测试](#测试) | [示例](#示例) | [路线](#路线)
+</div>
 
-仓库代号 **KNV**，即 **Kix Not Vix**。Kix 借鉴 Vix 编译器的工程经验和 LLVM 后端，但拥有独立的词法、语法和 AST，不继承 Vix 的语言兼容限制。
+本仓库是 **Kix** 语言（仓库代号 **KNV**，即 **Kix Not Vix**）的主源码仓库，包含编译器、运行时相关组件、示例和语言文档。
+
+Kix 的目标是用少量、统一、可判定的规则，构建一门适合人类阅读、工具分析和长期演进的原生语言。它借鉴 Vix 编译器的工程经验和 LLVM 后端，但拥有独立的词法、语法和 AST，不继承 Vix 的语言兼容限制。
+
+> 🚧 当前处于 **Stage 0 启动阶段**。编译器主体仍使用 Vix 编写，并由上一级目录的只读 `../Vix-lang` 作为启动编译器构建。Kix 的 lexer、parser 与语义分析已经实现，代码生成尚未接通。
+
+## 为什么是 Kix？
+
+- **静态类型：** 名字解析与类型检查在编译期完成，尽早暴露错误。
+- **少而统一的规则：** `type` 统一记录、别名与求和类型；`if`、`match` 和块都是表达式，块尾表达式即块的值。
+- **对人类和工具友好：** 确定性的换行终止规则、结构化模式，以及稳定且带位置的错误码。
+- **复用成熟后端：** 沿用既有 Vix lowering、MIR、LLVM 与 runtime，而不重写后端。
+
+## Hello world
+
+```kix
+fn main(): Int
+{
+    print("Hello, Kix!")
+    0
+}
+```
 
 ## 当前状态
 
-项目处于 Stage 0：编译器主体仍使用 Vix 编写，并由上一级目录的只读 `../Vix-lang` 作为启动编译器构建。
-
 已经实现：
 
-- Kix 独立 lexer，并保留 Vix 兼容模式；
+- 独立 Kix lexer，并保留 Vix 兼容模式；
 - 嵌套块注释、文档注释、进制数字、指数浮点数、raw/byte string；
 - 确定性的换行终止规则；
 - Kix parser 和独立 arena AST；
@@ -35,10 +63,7 @@ Kix 是一门正在实现中的静态类型系统语言。项目目标是用少�
 - `kixc build|run|check|ast` 的最终命令界面；
 - 使用 Kix 源码完成固定点自举。
 
-当前 `build/kixc-stage0 --check` 会执行 Kix 名字解析和类型检查，并使用独立的
-`E6xxx` 诊断码；词法/语法错误仍是 `E1100`。Kix 代码生成尚未接通。
-
-## 语法概览
+## 语法速览
 
 ```kix
 type Shape =
@@ -117,7 +142,7 @@ VIX_HOME=/path/to/Vix-lang sh scripts/build-vixc-host.sh
 ./build/kixc-stage0 --lang=vix --check program.vix
 ```
 
-Kix 语义检查（`--check`）已接通，但代码生成尚未接通，因此目前不能把 `.kix` 编译为可执行文件。Vix 模式仍可使用既有后端。
+`--check` 会执行 Kix 名字解析和类型检查，并使用独立的 `E6xxx` 诊断码；词法/语法错误仍是 `E1100`。Kix 代码生成尚未接通，因此目前不能把 `.kix` 编译为可执行文件；Vix 模式仍可使用既有后端。
 
 ## 测试
 
@@ -130,21 +155,32 @@ python3 tests/kix/run_semantic.py --compiler build/kixc-stage0
 python3 tests/syntax_tests.py build/kixc-stage0
 ```
 
-语义测试位于 `tests/kix/semantic/`：`accept/` 用例必须以 0 退出，
-`reject/` 用例必须非零退出，并返回同名 `.code` 文件中记录的稳定 `E6xxx`
-错误码和 `文件:行:列` 位置。
+语义测试位于 `tests/kix/semantic/`：`accept/` 用例必须以 0 退出；`reject/` 用例必须非零退出，并返回同名 `.code` 文件中记录的稳定 `E6xxx` 错误码和 `文件:行:列` 位置。
 
-Kix 语义诊断使用独立的错误码范围：名字解析 `E61xx`、类型检查 `E62xx`、
-模式 `E63xx`、借用 place `E64xx`、`Option`/`Result` 传播 `E65xx`、
-赋值可变性 `E66xx`。
+Kix 语义诊断使用独立的错误码范围：名字解析 `E61xx`、类型检查 `E62xx`、模式 `E63xx`、借用 place `E64xx`、`Option`/`Result` 传播 `E65xx`、赋值可变性 `E66xx`。
 
-解析器测试覆盖主要语法、结构化模式、错误诊断和复合 place 借用。借用用例确认以下结构不会退化为单一变量名：
+解析器回归还确认以下复合 place 借用不会退化为单一变量名：
 
 ```kix
 let field = &point.x
 let item = &mut items[0]
 let target = &*pointer
 ```
+
+## 示例
+
+`examples/` 中的示例全部使用 Kix 编写：
+
+| 示例 | 说明 |
+| --- | --- |
+| `examples/hello.kix`、`examples/fib.kix` | 入门与递归 |
+| `examples/adt_pattern.kix`、`examples/match_3.kix` | 求和类型与模式匹配 |
+| `examples/generics.kix`、`examples/result.kix`、`examples/option.kix` | 泛型与错误传播 |
+| `examples/owner.kix`、`examples/pointer.kix`、`examples/swap.kix` | 引用、可变借用与所有权 |
+| `examples/modules/` | 多文件模块系统 |
+| `examples/ed/ed.kix`、`examples/coreutils/grep.kix`、`examples/brainfuck.kix` | 更大规模的程序 |
+
+每个 `.kix` 示例都通过 Kix parser；可用 `./build/kixc-stage0 --lang=kix --ast-json <文件>` 查看其 AST。
 
 ## 目录
 
@@ -154,6 +190,7 @@ src/kix_ast.vix       Kix AST
 src/kix_parser.vix    Kix parser
 src/kix_semantic.vix  Kix 名字解析与类型检查
 tests/kix/            Kix lexer/parser/semantic 回归测试
+examples/             Kix 示例程序
 scripts/              LLVM 23 host 与 kixc-stage0 构建脚本
 seed/                 KNV 内保留的只读 Vix seed
 ```
@@ -169,3 +206,26 @@ seed/                 KNV 内保留的只读 Vix seed
 5. 用 Kix 重写编译器并完成固定点自举。
 
 功能只有在对应测试通过后才视为已经实现。
+
+## 文档
+
+- `examples/modules/README.md`：Kix 模块系统示例。
+- 语言规范以本 README 与测试为准；规范缺失处采用最小且向后兼容的行为，不恢复整个 docs 目录。
+
+## 参与贡献
+
+欢迎围绕语言设计、bug 报告、测试、标准库和文档提出贡献。请先在本仓库的 issue 中讨论：
+
+- GitHub Issues: <https://github.com/Daweidie/KNV/issues>
+
+## 许可
+
+本仓库是 Vix-lang 的衍生实验分支，许可沿用上游 Vix 的 Apache License 2.0。本启动分支当前尚未附 `LICENSE` 文件。
+
+## 生态
+
+| 项目 | 说明 | 状态 |
+| --- | --- | --- |
+| **Kix 编译器（KNV）** | Kix 前端与后端实现 | Stage 0 启动中 |
+| **Vix（上游）** | 启动编译器与 LLVM 后端来源 | 只读依赖 |
+| **Kix 示例** | `examples/` 中的 Kix 程序 | 持续补充 |
