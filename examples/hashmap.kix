@@ -1,0 +1,57 @@
+type HashMap[V] = { buckets: [[(Str, V)]], size: Int }
+type Option[T] = Some(T) | None
+
+fn nor_cap(capacity: Int): Int {
+	if capacity <= 0 {
+		return 16
+	}
+	return capacity
+}
+
+fn hash_str(s: Str): Int {
+	let mut hash: Int = 5381
+	let mut i = 0
+	while i < s.length {
+		hash = (hash * 33) + s[i]
+		i = i + 1
+	}
+	if hash < 0 {
+		hash = -hash
+	}
+	return hash
+}
+
+fn bucket_index(key: Str, capacity: Int): Int {
+	let mut h = hash_str(key)
+	if h < 0 {
+		h = -h
+	}
+	return h % capacity
+}
+
+pub fn new_hashmap[V](capacity: Int): HashMap[V] {
+	let cap = nor_cap(capacity)
+	let buckets: [[(Str, V)]] = []
+	let mut i = 0
+	while i < cap {
+		buckets.push([])
+		i = i + 1
+	}
+	return HashMap[V] { buckets: buckets, size: 0 }
+}
+
+pub fn len[V](map: HashMap[V]): Int {
+	return map.size
+}
+
+pub fn capacity[V](map: HashMap[V]): Int {
+	return map.buckets.length
+}
+
+fn main(): Int {
+	let h = hash_str("hi")
+	print(h)
+	let idx = bucket_index("hello", 16)
+	print(idx)
+	return 0
+}

@@ -1,0 +1,17 @@
+type Option[T] = Some(T) | None
+
+fn choose(): Option[Int] {
+    return Some(41)
+}
+
+fn fallback(): Int {
+    return 99
+}
+
+fn main(): Int {
+    let present = choose() ?? fallback()
+    let missing: Option[Int] = None
+    let absent = missing ?? 42
+    let chained = missing ?? choose() ?? 7
+    return present + absent + chained - 124
+}

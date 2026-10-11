@@ -1,0 +1,27 @@
+type Expr = Num(Int) | Nil
+
+fn eval(e: Expr): Int {
+    match e {
+        Num(n) => { return n }
+        Nil => { return 0 }
+    }
+    return 0
+}
+
+fn main(): Int {
+    let x = Num(100)
+    let z = Nil
+
+    let vx = eval(x)
+    let vz = eval(z)
+
+    print(vx)
+    print(vz)
+
+    match x {
+        Num(n) => { print(n) }
+        Nil => { print(-2) }
+    }
+
+    return 0
+}

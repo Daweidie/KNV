@@ -1,0 +1,9 @@
+type Person = { name: Str, age: Int }
+fn main(): Int {
+    let p = Person {
+        name: "John", age: 20
+    }
+    print(p.name)
+    print(p.age)
+    return 0
+}

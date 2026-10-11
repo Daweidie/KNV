@@ -1,0 +1,34 @@
+fn lexer(s: Str): Int {
+    for i in 0 .. s.length {
+        let c = s[i]
+        if c == ' ' {
+            continue
+        }
+        else if c >= '0' && c <= '9' {
+            print("Number")
+        }
+        else if c == '+' || c == '-' || c == '*' || c == '/' {
+            print("Operator")
+        }
+        else if c == '=' {
+            print("Equals")
+        }
+        else if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+            print("Identifier")
+        }
+        else {
+            print("Unknown")
+        }
+    }
+    return 0
+}
+
+fn sikp_ws(src: Str, pos: Int): Int {
+    return 0
+}
+
+fn main(): Int {
+    let s = "1+1+2=4"
+    lexer(s)
+    return 0
+}

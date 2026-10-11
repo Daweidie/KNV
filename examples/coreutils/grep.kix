@@ -1,0 +1,128 @@
+fn printf(format: *u8): Int
+fn fopen(filename: *u8, mode: *u8): *u8
+fn fclose(file: *u8): Int
+fn fread(buf: *u8, size: Int, count: Int, file: *u8): Int
+fn fseek(file: *u8, offset: Int, whence: Int): Int
+fn ftell(file: *u8): Int
+fn malloc(size: UInt): *u8
+
+fn read_file(path: *u8): *u8 {
+    let file = fopen(path, "r")
+    if file == 0 {
+        return 0
+    }
+
+    fseek(file, 0, 2)
+    let size = ftell(file)
+    fseek(file, 0, 0)
+
+    let buf = malloc(size + 1)
+    if buf == 0 {
+        fclose(file)
+        return 0
+    }
+
+    buf[fread(buf, 1, size, file)] = 0
+    fclose(file)
+    return buf
+}
+
+fn contains(text: *u8, start: Int, end: Int, pattern: *u8): Int {
+    if pattern[0] == 0 {
+        return 1
+    }
+
+    let mut pos = start
+    while pos < end {
+        let mut i = 0
+        while pos + i < end && pattern[i] != 0 && text[pos + i] == pattern[i] {
+            i = i + 1
+        }
+        if pattern[i] == 0 {
+            return 1
+        }
+        pos = pos + 1
+    }
+    return 0
+}
+
+fn pattern_length(pattern: *u8): Int {
+    let mut len = 0
+    while pattern[len] != 0 {
+        len = len + 1
+    }
+    return len
+}
+
+fn matches_at(text: *u8, pos: Int, end: Int, pattern: *u8): Int {
+    let mut i = 0
+    while pattern[i] != 0 {
+        if pos + i >= end || text[pos + i] != pattern[i] {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+fn print_highlighted_line(text: *u8, start: Int, end: Int, pattern: *u8) {
+    let len = pattern_length(pattern)
+    let mut i = start
+    while i < end {
+        if len > 0 && matches_at(text, i, end, pattern) == 1 {
+            printf("%c[1;31m", 27)
+            for j in 0 .. len {
+                printf("%c", text[i + j])
+            }
+            printf("%c[0m", 27)
+            i = i + len
+        } else {
+            printf("%c", text[i])
+            i = i + 1
+        }
+    }
+    printf("\n")
+}
+
+fn grep(pattern: *u8, text: *u8): Int {
+    let mut matches = 0
+    let mut line_start = 0
+    let mut i = 0
+
+    while text[i] != 0 {
+        if text[i] == '\n' {
+            if contains(text, line_start, i, pattern) == 1 {
+                print_highlighted_line(text, line_start, i, pattern)
+                matches = matches + 1
+            }
+            line_start = i + 1
+        }
+        i = i + 1
+    }
+
+    if line_start < i && contains(text, line_start, i, pattern) == 1 {
+        print_highlighted_line(text, line_start, i, pattern)
+        matches = matches + 1
+    }
+
+    return matches
+}
+
+fn main(argc: Int, argv: &Str): Int {
+    if argc < 3 {
+        printf("usage: grep \"PATTERN\" FILE\n")
+        return 2
+    }
+
+    let text = read_file(argv[2])
+    if text == 0 {
+        printf("grep: cannot read %s\n", argv[2])
+        return 2
+    }
+
+    if grep(argv[1], text) > 0 {
+        return 0
+    }
+    printf("not found %s in file %s\n", argv[1], argv[2])
+    return 1
+}

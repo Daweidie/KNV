@@ -1,0 +1,13 @@
+//1. 取地址：ref -> &
+fn main(): Int {
+    let x = 10
+    let mut ptr = &x //获取 x 的地址 赋值需要加上mut修饰符
+    //2. 解引用：@ -> *
+    let value = *ptr //获取 ptr 指向的值
+    *ptr = 20 //修改 ptr 指向的值
+    let arr = [1, 2, 3, 4, 5]
+    let p = &arr[0]
+    let second = *(p + 1) //获取 arr[1] = 2
+    print(second)
+    return 0
+}

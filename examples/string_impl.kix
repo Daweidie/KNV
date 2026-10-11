@@ -1,0 +1,8 @@
+use String
+
+fn main(): Int {
+    let s = "Hello, World!"
+    let len = s.length()
+    print(len)
+    return 0
+}

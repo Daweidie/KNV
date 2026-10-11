@@ -1,0 +1,18 @@
+fn test_1() {
+    // Kix spells the counted loop as `for i in 1 .. 5`.
+    for i in 1 .. 5 {
+        print(i)
+    }
+}
+fn test_2() {
+    for i in 1 .. 5 {
+        print(i)
+    }
+}
+fn main(): Int {
+    print("Testing:")
+    test_1()
+    print("Testing:")
+    test_2()
+    return 0
+}

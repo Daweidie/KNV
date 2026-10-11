@@ -1,0 +1,8 @@
+fn main(): Int {
+    // `nil` -> `0`; the null-pointer case uses a plain integer literal.
+    let p: &Int = 0
+    if p == 0 {
+        print("nil is working...")
+    }
+    return 0
+}

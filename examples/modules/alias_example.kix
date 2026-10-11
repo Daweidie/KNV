@@ -1,0 +1,35 @@
+// alias_example.kix — use 导入示例
+// 演示：use 关键字导入模块符号（Kix 的 use 只接受路径，没有 as 别名）
+//
+// 解析验证：
+//   ./build/kixc-stage0 --lang=kix --ast-json examples/modules/alias_example.kix
+//   # 退出码 0
+
+mod math
+
+// Kix 的 use 只接受路径，不再支持 import … as 别名
+// 统一使用限定名调用：module::function()
+use math::add
+use math::sub
+use math::mul
+use math::abs_val
+
+fn main(): Int
+{
+    // 限定名调用
+    let a = math::add(10, 3)     // 13
+    let b = math::mul(4, 5)      // 20
+    let c = math::sub(b, a)      // 7
+    let d = math::abs_val(0 - 6) // 6
+
+    print(a)  // 13
+    print(b)  // 20
+    print(c)  // 7
+    print(d)  // 6
+
+    // Kix 不提供 as 别名，下面只作为语义对照保留
+    // let a2 = plus(10, 3)   // 等价于 math::add(10, 3)
+    // let b2 = times(4, 5)   // 等价于 math::mul(4, 5)
+
+    return 0
+}

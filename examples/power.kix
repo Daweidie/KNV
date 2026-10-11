@@ -1,0 +1,34 @@
+// Kix has no `**` operator, so exponentiation uses this helper.
+fn pow(base: Int, exp: Int): Int {
+    let mut result = 1
+    let mut i = 0
+    while i < exp {
+        result = result * base
+        i = i + 1
+    }
+    result
+}
+
+fn main(): Int {
+    print("Powers of 2:")
+    for i in 0 .. 11 {
+        print(pow(2, i))
+    }
+
+    print("---")
+    print("Powers of 3:")
+    for i in 0 .. 6 {
+        print(pow(3, i))
+    }
+
+    print("---")
+    let x = pow(2, 3) + pow(3, 2)
+    print(x)
+
+    print("squ:")
+    for i in 1 .. 11 {
+        print(pow(i, 2))
+    }
+
+    return 0
+}

@@ -1,0 +1,17 @@
+// The extern "C" block is replaced by signature-only Kix functions.
+fn printf(format: *u8): Int
+fn malloc(size: Int): *u8
+fn free(ptr: *u8): Int
+
+fn main(): Int {
+    let a = malloc(10)
+    for i in 0 .. 10 {
+        a[i] = i * i
+    }
+    for i in 0 .. 10 {
+        printf("%d ", a[i])
+    }
+    printf("\n")
+    free(a)
+    return 0
+}

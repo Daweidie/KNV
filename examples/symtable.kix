@@ -1,0 +1,38 @@
+type SymbolTable[T] = { scopes: [[Entry[T]]] }
+// Kix has no tuple field access (`pair.0`), so entries use a record instead.
+type Entry[T] = { key: Str, value: T }
+type Option[T] = Some(T) | None
+
+fn new_table[T](): SymbolTable[T] {
+    SymbolTable[T] { scopes: [[]] }
+}
+
+fn declare[T](table: SymbolTable[T], name: Str, val: T) {
+    table.scopes[table.scopes.length - 1].push(Entry { key: name, value: val })
+}
+
+fn lookup[T](table: SymbolTable[T], name: Str): Option[T] {
+    for scope in table.scopes {
+        for pair in scope {
+            if pair.key == name {
+                return Some(pair.value)
+            }
+        }
+    }
+    return None
+}
+
+type Type = { name: Str }
+
+fn main(): Int {
+    let tab = new_table[Type]()
+    declare[Type](tab, "i32", Type { name: "i32" })
+
+    let found = lookup[Type](tab, "i32")
+    match found {
+        Some(v) => print(v.name)
+        None => print("not found")
+    }
+
+    return 0
+}

@@ -1,0 +1,11 @@
+// Vix's top-level `let` globals become zero-arg functions in Kix.
+fn counter(): Int = 42
+fn message(): Str = "Hello World"
+fn pi(): f64 = 3.14159
+
+fn main(): Int {
+    print(counter())
+    print(message())
+    print(pi())
+    return 0
+}

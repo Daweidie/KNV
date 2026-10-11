@@ -1,0 +1,16 @@
+fn swap(a: &mut Int, b: &mut Int)
+{
+    // Kix dereferences a reference with `*`.
+    let temp = *a;
+    *a = *b;
+    *b = temp;
+}
+fn main(): Int
+{
+    let mut a = 10
+    let mut b = 20
+    swap(&mut a, &mut b)
+    print(a)
+    print(b)
+    return 0
+}

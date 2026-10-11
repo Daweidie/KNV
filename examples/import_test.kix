@@ -1,0 +1,8 @@
+// import_test.kix — 文件导入示例
+// Vix: import "std/io.vix"  ->  Kix: use std::io
+use std::io
+
+fn main(): Int {
+    puts("Import test passed!")
+    return 0
+}

@@ -1,0 +1,21 @@
+type Option[T] = Some(T) | None
+
+fn peek_char(src: Str, pos: Int): Option[Int] {
+    if pos < 0 || pos >= src.length {
+        return None
+    }
+    return Some(src[pos])
+}
+
+fn print_peek(src: Str, pos: Int) {
+    match peek_char(src, pos) {
+        Some(c) => print(c)
+        None => print("none")
+    }
+}
+
+fn main(): Int {
+    print_peek("abc", 1)
+    print_peek("abc", 10)
+    return 0
+}

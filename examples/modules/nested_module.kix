@@ -1,0 +1,31 @@
+// nested_module.kix — 嵌套模块示例
+// 演示：utils/mod.kix 作为目录模块，包含子模块 string_helpers
+//
+// 文件结构：
+//   nested_module.kix           ← 入口
+//   utils/mod.kix               ← utils 模块入口
+//   utils/string_helpers.kix    ← utils 的子模块
+//
+// 解析验证：
+//   ./build/kixc-stage0 --lang=kix --ast-json examples/modules/nested_module.kix
+//   # 示例语义：退出码 5
+
+mod utils
+
+use utils::greet
+use utils::string_helpers::length
+use utils::string_helpers::is_empty
+
+fn main(): Int
+{
+    utils::greet("Kix")
+
+    let msg = "hello"
+    let len = utils::string_helpers::length(msg)
+    print(len)  // 5
+
+    let empty = utils::string_helpers::is_empty("")
+    print(empty)  // 1
+
+    return len  // 5
+}

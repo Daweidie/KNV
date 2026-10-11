@@ -1,0 +1,12 @@
+// Kix has no macros or comptime.  This example shows the same idea - a
+// recursive Fibonacci helper - as an ordinary runtime function instead.
+
+fn fib(n: Int): Int {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main(): Int {
+    print(fib(10))
+    0
+}

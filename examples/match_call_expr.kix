@@ -1,0 +1,22 @@
+type Option[T] = Some(T) | None
+
+fn choose(flag: Int): Option[Str] {
+    if flag == 0 {
+        return None
+    }
+    return Some("hello")
+}
+
+fn main(): Int {
+    match choose(1) {
+        Some(v) => print(v)
+        None => print("none")
+    }
+
+    match choose(0) {
+        Some(v) => print(v)
+        None => print("none")
+    }
+
+    return 0
+}

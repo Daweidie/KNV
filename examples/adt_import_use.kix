@@ -1,0 +1,17 @@
+use adt_import_defs
+
+fn eval(e: ImportedExpr): Int {
+    match e {
+        ImportedNum(n) => { return n }
+        ImportedNil => { return 0 }
+    }
+    return 0
+}
+
+fn main(): Int {
+    let x = ImportedNum(42)
+    let y = ImportedNil
+    print(eval(x))
+    print(eval(y))
+    return 0
+}

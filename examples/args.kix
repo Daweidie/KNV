@@ -1,0 +1,7 @@
+fn main(argc: Int, argv: *u8): Int {
+    for i in 0 .. argc {
+        print(argv[i])
+    }
+    print("Hello World")
+    return 0
+}

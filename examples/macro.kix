@@ -1,0 +1,23 @@
+// Kix has no macros or comptime.  This example keeps the same intent using
+// ordinary functions: a named add function and a hand-written vector builder
+// replace the two macros from the Vix version.
+
+fn printf(fmt: Str): Int
+
+fn make_add(a: Int, b: Int): Int {
+    a + b
+}
+
+fn make_vec(a: Int, b: Int, c: Int, d: Int): [Int] {
+    [a, b, c, d]
+}
+
+fn main(): Int {
+    let result = make_add(10, 20)
+    print(result)
+    let arr = make_vec(1, 2, 3, 4)
+    for i in 0 .. arr.length {
+        printf("%d ", arr[i])
+    }
+    0
+}

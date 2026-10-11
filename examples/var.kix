@@ -1,0 +1,9 @@
+fn main(): Int {
+    let a = "Hello"
+    let b = 123
+    let c = 3.14
+    print(a)
+    print(b)
+    print(c)
+    return 0
+}

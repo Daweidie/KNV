@@ -1,0 +1,8 @@
+fn test(a: Int): Int = a + 1
+
+fn main(): Int
+{
+    let x = test(1)
+    print(x)
+    return 0
+}

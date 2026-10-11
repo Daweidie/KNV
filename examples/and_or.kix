@@ -1,0 +1,13 @@
+// Vix's top-level `let` globals become zero-arg functions in Kix.
+fn a(): Int = 10
+fn b(): Int = 20
+
+fn main(): Int {
+    if a() == 10 || b() == 20 {
+        print("a is 10 or b is 20")
+    }
+    if a() == 10 && b() == 20 {
+        print("a is 10 and b is 20")
+    }
+    return 0
+}

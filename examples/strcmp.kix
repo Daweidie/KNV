@@ -1,0 +1,22 @@
+// extern "C" printf is declared as a signature-only Kix function.
+fn printf(format: *u8): Int
+
+fn strcmp(a: *u8, b: *u8): Int {
+    let mut i = 0
+    while 1 {
+        let ca = a[i]
+        let cb = b[i]
+        if ca != cb {
+            return ca - cb
+        }
+        if ca == 0 {
+            return 0
+        }
+        i += 1
+    }
+    return 0
+}
+
+fn main(): Int {
+    return 0
+}

@@ -1,0 +1,32 @@
+// counter.kix — 计数器模块
+// 演示模块中定义记录类型和操作函数
+
+pub type Counter = {
+    value: Int,
+    step:  Int
+}
+
+pub fn counter_new(step: Int): Counter
+{
+    return Counter{ value: 0, step: step }
+}
+
+pub fn counter_inc(c: &Counter)
+{
+    c.value = c.value + c.step
+}
+
+pub fn counter_dec(c: &Counter)
+{
+    c.value = c.value - c.step
+}
+
+pub fn counter_reset(c: &Counter)
+{
+    c.value = 0
+}
+
+pub fn counter_get(c: &Counter): Int
+{
+    return c.value
+}

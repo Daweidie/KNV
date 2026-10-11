@@ -1,0 +1,34 @@
+fn partition(arr: &mut [Int], low: Int, high: Int): Int {
+    let pivot = arr[high]
+    let mut i = low - 1
+    for j in low .. high {
+        if arr[j] <= pivot {
+            i = i + 1
+            let temp = arr[i]
+            arr[i] = arr[j]
+            arr[j] = temp
+        }
+    }
+    i = i + 1
+    let temp = arr[i]
+    arr[i] = arr[high]
+    arr[high] = temp
+    return i
+}
+
+fn quicksort(arr: &mut [Int], low: Int, high: Int) {
+    if low < high {
+        let pi = partition(arr, low, high)
+        quicksort(arr, low, pi - 1)
+        quicksort(arr, pi + 1, high)
+    }
+}
+
+fn main(): Int {
+    let mut arr = [10, 7, 8, 9, 1, 5]
+    quicksort(&mut arr, 0, 5)
+    for i in 0 .. 6 {
+        print(arr[i])
+    }
+    return 0
+}

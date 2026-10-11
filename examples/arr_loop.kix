@@ -1,0 +1,11 @@
+fn arr_loop(arr: [Int]) {
+    for i in 0 .. arr.length {
+        print(arr[i])
+    }
+}
+fn main(): Int {
+    let arr = [5, 2, 8, 1, 9, 10]
+    arr_loop(arr)
+    print(arr.length)
+    return 0
+}

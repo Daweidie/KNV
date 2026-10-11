@@ -1,0 +1,48 @@
+fn take_array(xs: [Int]): Int {
+    return xs[0]
+}
+
+fn add_refs(a: &Int, b: &Int): Int {
+    return *a + *b
+}
+
+fn add_mut_refs(a: &mut Int, b: &mut Int): Int {
+    return *a + *b
+}
+
+fn use_after_move(): Int {
+    let xs = [1, 2, 3]
+    let ys = xs
+    print(ys[0])
+    return xs[0]
+}
+
+fn duplicate_mut_borrow(): Int {
+    let mut value = 10
+    return add_mut_refs(&mut value, &mut value)
+}
+
+fn dangling_local_ref(): &Int {
+    let local = 99
+    return &local
+}
+
+fn legal_last_use_move(): Int {
+    let xs = [4, 5]
+    let ys = xs
+    return take_array(ys)
+}
+
+fn legal_copy_and_shared_borrow(): Int {
+    let x = 7
+    let y = x
+    return add_refs(&x, &y)
+}
+
+fn main(): Int {
+    print(legal_last_use_move())
+    print(legal_copy_and_shared_borrow())
+    print(use_after_move())
+    print(duplicate_mut_borrow())
+    return 0
+}

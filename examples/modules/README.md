@@ -1,106 +1,102 @@
-# Vix Module System Examples
+# Kix Module System Examples
 
-This directory demonstrates the multi-file module system in Vix.
+This directory demonstrates the multi-file module system in Kix.
 
 ## Overview
 
-The Vix module system allows you to organize code across multiple files:
+The Kix module system allows you to organize code across multiple files:
 - **Module declaration**: `mod module_name` or `pub mod module_name`
-- **Import statement**: `import module::function` or `import module::Type as Alias`
-- **Qualified calls**: `module::function()` for functions from imported modules
+- **Use statement**: `use module::function` (Kix `use` takes a path; there is no `as` alias)
+- **Qualified calls**: `module::function()` for functions from modules
 
 ## File Resolution
 
 When you declare `mod math`, the compiler looks for:
-1. `math.vix` in the same directory
-2. `math/mod.vix` as a subdirectory module
+1. `math.kix` in the same directory
+2. `math/mod.kix` as a subdirectory module
 
 ## Examples
 
-### 1. Basic Module (`basic_example.vix`)
-Simple two-file program with a math module.
+### 1. Basic Module (`basic_example.kix`)
+Simple two-file program with a math module (`math.kix`).
 
 ```bash
-# Compile with self backend (recommended)
-vixc examples/modules/basic_example.vix --backend=self -o output
-./output  # Returns 17
+# Parse the Kix source
+./build/kixc-stage0 --lang=kix --ast-json examples/modules/basic_example.kix
 ```
 
-### 2. Multiple Modules (`multi_module.vix`)
-Demonstrates importing multiple modules.
+### 2. Multiple Modules (`multi_module.kix`)
+Demonstrates using several modules at once, including a module that defines a record type (`counter.kix`).
 
-### 3. Module with Structs (`structs_example.vix`)
-Shows how to define and use structs across modules.
+### 3. Module with Records (`counter.kix`)
+Shows how to define and use record types across modules.
+
+### 4. Nested Modules (`nested_module.kix` + `utils/mod.kix`)
+Shows a directory module entry (`utils/mod.kix`) exposing a child module (`utils/string_helpers.kix`).
 
 ## Compilation
 
-**Using Self Backend (Recommended)**:
-```bash
-vixc your_file.vix --backend=self -o output
-```
+Kix code generation is not wired up yet, so use the front end:
 
-**View Module Graph**:
 ```bash
-vixc your_file.vix --module-graph
-```
+# Parse a program
+./build/kixc-stage0 --lang=kix --ast-json your_file.kix
 
-**Debug MIR Output**:
-```bash
-vixc your_file.vix --debug=mir
+# Semantic check (optional)
+./build/kixc-stage0 --lang=kix --check your_file.kix
 ```
 
 ## Known Limitations
 
-- LLVM backend currently has issues with multi-file compilation
-- Use `--backend=self` or `--backend=self-lir` for multi-file programs
-- Import statements are parsed but full error checking is pending
+- Kix code generation is not connected yet, so `.kix` files cannot be built into executables.
+- `use` accepts a path only; `import ... as` aliases are not part of Kix.
 
 ## Syntax Reference
 
 ### Module Declaration
-```vix
-// In main.vix
+```kix
+// In main.kix
 mod math              // Private module (not re-exported)
 pub mod utilities     // Public module (can be re-exported)
 
-fn main(): i32 {
+fn main(): Int {
     return 0
 }
 ```
 
-### Module File (math.vix)
-```vix
+### Module File (math.kix)
+```kix
 // All top-level functions are public by default
-pub fn add(a: i32, b: i32): i32 {
+pub fn add(a: Int, b: Int): Int {
     return a + b
 }
 
-pub fn multiply(x: i32, y: i32): i32 {
+pub fn multiply(x: Int, y: Int): Int {
     return x * y
 }
 ```
 
-### Import and Usage
-```vix
+### Use and Usage
+```kix
 mod math
 
-import math::add
-import math::multiply as mul
+use math::add
+use math::multiply
 
-fn main(): i32 {
-    let sum = math::add(3, 4)      // Qualified call
-    let product = math::mul(2, 5)  // Using alias
-    return sum + product           // Returns 17
+fn main(): Int {
+    let sum = math::add(3, 4)       // Qualified call
+    let product = math::multiply(2, 5)
+    return sum + product            // Returns 17
 }
 ```
 
-### Nested Modules (utils/mod.vix)
-```vix
+### Nested Modules (utils/mod.kix)
+```kix
 mod utils
 
-import utils::string_helpers
+use utils::string_helpers
 
-fn main(): i32 {
+fn main(): Int {
     return utils::string_helpers::length("hello")
 }
 ```

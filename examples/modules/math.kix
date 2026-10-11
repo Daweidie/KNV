@@ -1,0 +1,23 @@
+// math.kix — arithmetic module
+// 声明为模块文件，供主程序通过 mod math 引入
+
+pub fn add(a: Int, b: Int): Int
+{
+    return a + b
+}
+
+pub fn sub(a: Int, b: Int): Int
+{
+    return a - b
+}
+
+pub fn mul(a: Int, b: Int): Int
+{
+    return a * b
+}
+
+pub fn abs_val(n: Int): Int
+{
+    if n < 0 { return 0 - n }
+    return n
+}

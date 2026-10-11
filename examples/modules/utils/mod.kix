@@ -1,0 +1,11 @@
+// utils/mod.kix — utils 模块入口
+// 演示：目录作为模块（通过 mod.kix）
+
+pub mod string_helpers
+
+pub fn greet(name: Str): Int
+{
+    print("Hello, ")
+    print(name)
+    return 0
+}

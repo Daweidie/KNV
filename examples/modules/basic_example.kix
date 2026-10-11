@@ -1,0 +1,23 @@
+// basic_example.kix — 基础模块示例
+// 演示：声明模块、导入符号、限定名调用
+//
+// 文件结构：
+//   basic_example.kix   ← 入口
+//   math.kix            ← math 模块（加减乘/绝对值）
+//
+// 解析验证：
+//   ./build/kixc-stage0 --lang=kix --ast-json examples/modules/basic_example.kix
+//   # 示例语义：退出码 17
+
+mod math
+
+use math::add
+use math::mul
+
+fn main(): Int
+{
+    // 使用限定名调用
+    let a = math::add(3, 4)   // 7
+    let b = math::mul(2, 5)   // 10
+    return a + b               // 17
+}
