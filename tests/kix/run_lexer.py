@@ -56,11 +56,11 @@ def main() -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if guarded.returncode == 0 or "Kix semantic analysis and code generation are not implemented" not in guarded.stderr:
+    if guarded.returncode == 0 or "E1100" not in guarded.stderr:
         failed += 1
-        print("FAIL unimplemented-parser guard")
+        print("FAIL malformed-program parser guard")
     else:
-        print("ok   unimplemented-parser guard")
+        print("ok   malformed-program parser guard")
 
     if failed:
         print(f"{failed} Kix lexer test(s) failed")

@@ -167,6 +167,10 @@ test: all
 	done
 	python3 tests/diagnostics.py $(TARGET)
 	python3 tests/syntax_tests.py $(TARGET)
+	$(PYTHON) tests/kix/run_lexer.py --compiler $(TARGET)
+	$(PYTHON) tests/kix/run_parser.py --compiler $(TARGET)
+	$(PYTHON) tests/kix/run_semantic.py --compiler $(TARGET)
+	$(PYTHON) tests/kix/run_e2e.py --compiler $(TARGET)
 	python3 tests/entry_alloca.py --compiler $(TARGET)
 	$(PYTHON) tests/complex_tests.py --compiler $(TARGET)
 

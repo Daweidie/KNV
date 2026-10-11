@@ -1,0 +1,13 @@
+fn main(): Int
+{
+    let values = [1, 2, 3]
+    values[1] = 5
+    let mut index = 0
+    while index < 3 {
+        print(values[index])
+        index += 1
+    }
+    if values[1] == 5 { print("ok") } else { print("bad") }
+    for number in 0 .. 3 { print(number) }
+    return 0
+}

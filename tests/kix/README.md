@@ -13,6 +13,7 @@ sh scripts/build-kixc-stage0.sh
 python3 tests/kix/run_lexer.py --compiler build/kixc-stage0
 python3 tests/kix/run_parser.py --compiler build/kixc-stage0
 python3 tests/kix/run_semantic.py --compiler build/kixc-stage0
+python3 tests/kix/run_e2e.py --compiler build/kixc-stage0
 ```
 
 Semantic `accept/*.kix` cases must pass `--check` with exit code 0. Each
@@ -20,6 +21,6 @@ Semantic `accept/*.kix` cases must pass `--check` with exit code 0. Each
 stable `E6xxx` code stored in the sibling `reject/<name>.code` file together
 with a `file:line:column` location.
 
-Future CLI and executable tests should follow the same convention: fixtures
-under `tests/kix/<phase>/` and a small runner with structural assertions rather
-than output-only smoke tests.
+End-to-end fixtures live under `e2e/`. The runner checks LLVM IR, assembly and
+object emission, executes hello and fib binaries with exact stdout assertions,
+and verifies unsupported lowering fails with a located `E7xxx` diagnostic.

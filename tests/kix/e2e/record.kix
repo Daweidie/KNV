@@ -1,0 +1,13 @@
+type Point = {
+    x: Int,
+    y: Int
+}
+
+fn main(): Int
+{
+    let mut point = Point { x: 3, y: 4 }
+    print(point.x)
+    point.y = 9
+    print(point.y)
+    return 0
+}

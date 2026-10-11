@@ -13,7 +13,7 @@
 
 本仓库是 **Kix**（仓库代号 **KNV**，即 **Kix Not Vix**）的主源码仓库，包含编译器、运行时相关组件、示例和文档。Kix 借鉴 Vix 的经验与 LLVM 后端，但拥有独立的词法、语法和 AST。
 
-> 🚧 **Stage 0**：编译器主体仍使用 Vix 编写，由上一级目录的只读 `../Vix-lang` 启动构建。Kix 前端（lexer、parser、语义）已实现，代码生成尚未接通。
+> 🚧 **Stage 0**：编译器主体仍使用 Vix 编写，由上一级目录的只读 `../Vix-lang` 启动构建。Kix 前端已实现；后端已接通函数、标量表达式、`let`/赋值、`print`、`if`/`while`/range-for、数组读写和记录类型，hello/fib 已经端到端测试。
 
 ## 为什么是 Kix？
 
@@ -50,9 +50,10 @@ sh scripts/build-kixc-stage0.sh
 ./build/kixc-stage0 --check program.kix      # 名字解析 + 类型检查
 ./build/kixc-stage0 --ast program.kix
 ./build/kixc-stage0 --ast-json program.kix
+./build/kixc-stage0 program.kix -o program  # 已支持的后端子集
 ```
 
-Kix 语义错误使用独立的 `E6xxx` 码，词法/语法错误仍是 `E1100`。Kix 代码生成尚未接通，暂不能编译为可执行文件；Vix 模式仍可使用既有后端。
+Kix 语义错误使用 `E6xxx` 码，lowering 拒绝使用带位置和 byte span 的 `E7xxx` 码，词法/语法错误仍是 `E1100`。尚未映射的 Kix 结构会显式拒绝，不会静默生成代码。
 
 ## 测试
 
@@ -60,6 +61,7 @@ Kix 语义错误使用独立的 `E6xxx` 码，词法/语法错误仍是 `E1100`�
 python3 tests/kix/run_lexer.py --compiler build/kixc-stage0
 python3 tests/kix/run_parser.py --compiler build/kixc-stage0
 python3 tests/kix/run_semantic.py --compiler build/kixc-stage0
+python3 tests/kix/run_e2e.py --compiler build/kixc-stage0
 python3 tests/syntax_tests.py build/kixc-stage0   # Vix 兼容回归
 ```
 

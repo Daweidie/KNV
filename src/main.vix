@@ -43,7 +43,7 @@ fn compiler_mode(arg: string): CompilerModeResult
 
 fn strip_vix_ext(name: string): string
 {
-    if (string_ends_with(name, ".vix") == 1 or string_ends_with(name, ".vic") == 1)
+    if (string_ends_with(name, ".vix") == 1 or string_ends_with(name, ".vic") == 1 or string_ends_with(name, ".kix") == 1)
     {
         let mut out = ""
         let end = name.length - 4
@@ -351,33 +351,35 @@ fn run_mode(mode: string, src: string, filename: string, emit: string, output: s
         _ -> {}
     }
 
+    let mut program = ast_program_err("")
     if (language == "kix")
     {
-        if (mode == "--ast" or mode == "-ast" or mode == "--ast-json" or mode == "--parser" or mode == "--check")
+        let kix_program = parse_kix_program(src, filename)
+        if (kix_program.ok == 0)
         {
-            let kix_program = parse_kix_program(src, filename)
-            if (kix_program.ok == 0)
-            {
-                diag_print(kix_program.error)
-                diag_protocol_finish(1, 0)
-                return mode_failure()
-            }
-            if (mode == "--ast-json") { info_print(kix_ast_json(kix_program)); return mode_success() }
-            if (mode != "--check") { info_print(kix_ast_debug(kix_program)); return mode_success() }
-            let kix_semantic = kix_semantic_check(kix_program, src, filename)
-            if (kix_semantic.ok == 0)
-            {
-                diag_print(kix_semantic.render)
-                diag_protocol_finish(kix_semantic.error_count, kix_semantic.warning_count)
-                return mode_failure()
-            }
-            return mode_success()
+            diag_print(kix_program.error)
+            diag_protocol_finish(1, 0)
+            return mode_failure()
         }
-        diag_print("vixc: error: Kix semantic analysis and code generation are not implemented yet; use '--check' or '--ast-json'")
-        return mode_failure()
+        if (mode == "--ast-json") { info_print(kix_ast_json(kix_program)); return mode_success() }
+        if (mode == "--ast" or mode == "-ast" or mode == "--parser") { info_print(kix_ast_debug(kix_program)); return mode_success() }
+        let kix_semantic = kix_semantic_check(kix_program, src, filename)
+        if (kix_semantic.ok == 0)
+        {
+            diag_print(kix_semantic.render)
+            diag_protocol_finish(kix_semantic.error_count, kix_semantic.warning_count)
+            return mode_failure()
+        }
+        if (mode == "--check") { return mode_success() }
+        program = kix_lower_program(kix_program, filename)
+        if (program.ok == 0)
+        {
+            diag_print(program.error)
+            diag_protocol_finish(1, 0)
+            return mode_failure()
+        }
     }
-
-    let program = parse_program(src, filename)
+    else { program = parse_program(src, filename) }
 
     match mode
     {

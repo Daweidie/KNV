@@ -1,0 +1,320 @@
+// Transitional Kix -> legacy AstProgram adapter.  Keeping this boundary small
+// lets Kix retain its own syntax/semantic model while reusing the mature
+// desugar, analysis, MIR, LLVM, and linker pipeline.
+pub type KixLowerer = struct {
+    exprs: ExprStore,
+    stmts: StmtStore,
+    ok: i32,
+    error: string,
+    filename: string
+}
+
+pub type KixLowerBlock = struct { stmt_idx: i32, value_idx: i32 }
+
+pub fn kix_lower_type(ty: string): string
+{
+    if (ty == "Int") { return "i32" }
+    if (ty == "Float") { return "f64" }
+    if (ty == "Str" or ty == "String") { return "string" }
+    if (ty == "Bool") { return "bool" }
+    if (ty == "Unit" or ty == "()") { return "void" }
+    if (ty == "[Int]") { return "[i32]" }
+    if (ty == "[Float]") { return "[f64]" }
+    if (ty == "[Str]" or ty == "[String]") { return "[string]" }
+    if (ty == "[Bool]") { return "[bool]" }
+    return ty
+}
+
+pub fn kix_lower_fail(lower: &KixLowerer, node: KixNode, detail: string): i32
+{
+    if (lower.ok == 1)
+    {
+        lower.ok = 0
+        lower.error = "E7001 " + lower.filename + ":" + i32_to_str(node.line) + ":" + i32_to_str(node.col) + ": unsupported Kix lowering for " + node.tag + ": " + detail + " [bytes " + i32_to_str(node.start) + ".." + i32_to_str(node.end) + "]"
+    }
+    return -1
+}
+
+pub fn kix_lower_expr_at(lower: &KixLowerer, idx: i32, node: KixNode): i32
+{
+    if (idx >= 0) { expr_store_set_loc(lower.exprs, idx, node.line, node.col) }
+    return idx
+}
+
+pub fn kix_lower_stmt_at(lower: &KixLowerer, idx: i32, node: KixNode): i32
+{
+    if (idx >= 0) { stmt_store_set_loc(lower.stmts, idx, node.line, node.col) }
+    return idx
+}
+
+pub fn kix_lower_expr(lower: &KixLowerer, store: &KixNodeStore, id: i32): i32
+{
+    if (id < 0) { return -1 }
+    let node = kix_store_get(store, id)
+    if (node.tag == "IntLiteral") { return kix_lower_expr_at(lower, ast_expr_int(lower.exprs, ks_atoi(node.text)), node) }
+    if (node.tag == "FloatLiteral") { return kix_lower_expr_at(lower, ast_expr_float(lower.exprs, atof(node.text)), node) }
+    if (node.tag == "StringLiteral" or node.tag == "RawStringLiteral") { return kix_lower_expr_at(lower, ast_expr_string(lower.exprs, node.text), node) }
+    if (node.tag == "BoolLiteral") { return kix_lower_expr_at(lower, ast_expr_bool(lower.exprs, if (node.text == "true") { 1 } else { 0 }), node) }
+    if (node.tag == "Path") { return kix_lower_expr_at(lower, ast_expr_identifier(lower.exprs, node.text), node) }
+    if (node.tag == "Binary")
+    {
+        let left = kix_lower_expr(lower, store, node.children[0])
+        let right = kix_lower_expr(lower, store, node.children[1])
+        if (lower.ok == 0) { return -1 }
+        return kix_lower_expr_at(lower, ast_expr_binop(lower.exprs, node.text, left, right), node)
+    }
+    if (node.tag == "Unary")
+    {
+        let operand = kix_lower_expr(lower, store, node.children[0])
+        if (lower.ok == 0) { return -1 }
+        if (node.text == "*") { return kix_lower_expr_at(lower, ast_expr_deref(lower.exprs, operand), node) }
+        return kix_lower_expr_at(lower, ast_expr_unaryop(lower.exprs, node.text, operand), node)
+    }
+    if (node.tag == "Call")
+    {
+        if (node.children.length == 0) { return kix_lower_fail(lower, node, "call has no callee") }
+        let callee = kix_store_get(store, node.children[0])
+        let mut args: [i32] = []
+        for (i in 1 .. node.children.length) { args.push(kix_lower_expr(lower, store, node.children[i])) }
+        if (lower.ok == 0) { return -1 }
+        if (callee.tag == "Path") { return kix_lower_expr_at(lower, ast_expr_call(lower.exprs, callee.text, args), node) }
+        if (callee.tag == "Field")
+        {
+            let base = kix_lower_expr(lower, store, callee.children[0])
+            return kix_lower_expr_at(lower, ast_expr_method_call(lower.exprs, base, callee.text, args), node)
+        }
+        let callee_idx = kix_lower_expr(lower, store, node.children[0])
+        return kix_lower_expr_at(lower, ast_expr_call_expr(lower.exprs, callee_idx, args), node)
+    }
+    if (node.tag == "If")
+    {
+        let cond = kix_lower_expr(lower, store, node.children[0])
+        let then_expr = kix_lower_expr(lower, store, node.children[1])
+        let else_expr = if (node.children.length > 2) { kix_lower_expr(lower, store, node.children[2]) } else { -1 }
+        if (else_expr < 0) { return kix_lower_fail(lower, node, "value if requires an else branch") }
+        return kix_lower_expr_at(lower, ast_expr_if(lower.exprs, cond, then_expr, else_expr), node)
+    }
+    if (node.tag == "Block")
+    {
+        let block = kix_lower_block(lower, store, id)
+        if (block.value_idx >= 0) { return kix_lower_expr_at(lower, ast_expr_block_value(lower.exprs, block.stmt_idx, block.value_idx), node) }
+        return kix_lower_expr_at(lower, ast_expr_block(lower.exprs, block.stmt_idx), node)
+    }
+    if (node.tag == "Index")
+    {
+        let base = kix_lower_expr(lower, store, node.children[0])
+        let index = kix_lower_expr(lower, store, node.children[1])
+        return kix_lower_expr_at(lower, ast_expr_index(lower.exprs, base, index), node)
+    }
+    if (node.tag == "Field")
+    {
+        let base = kix_lower_expr(lower, store, node.children[0])
+        return kix_lower_expr_at(lower, ast_expr_field(lower.exprs, base, node.text), node)
+    }
+    if (node.tag == "ArrayLiteral")
+    {
+        let mut values: [i32] = []
+        for (i in 0 .. node.children.length) { values.push(kix_lower_expr(lower, store, node.children[i])) }
+        return kix_lower_expr_at(lower, ast_expr_array(lower.exprs, values), node)
+    }
+    if (node.tag == "RecordLiteral")
+    {
+        let mut field_names: [string] = []
+        let mut field_values: [i32] = []
+        for (field_i in 1 .. node.children.length)
+        {
+            let field = kix_store_get(store, node.children[field_i])
+            if (field.tag != "FieldInit" or field.children.length == 0) { return kix_lower_fail(lower, field, "malformed record field initializer") }
+            field_names.push(field.text)
+            field_values.push(kix_lower_expr(lower, store, field.children[0]))
+        }
+        let record_base = kix_store_get(store, node.children[0])
+        let type_name = if (node.text != "") { node.text } else { record_base.text }
+        return kix_lower_expr_at(lower, ast_expr_struct_literal(lower.exprs, type_name, field_names, field_values), node)
+    }
+    return kix_lower_fail(lower, node, "node has no legacy expression representation yet")
+}
+
+pub fn kix_lower_assignment(lower: &KixLowerer, store: &KixNodeStore, node: KixNode): i32
+{
+    let target = kix_store_get(store, node.children[0])
+    let right = kix_lower_expr(lower, store, node.children[1])
+    let mut value = right
+    if (node.text != "=")
+    {
+        let current = kix_lower_expr(lower, store, node.children[0])
+        let op = slice_string(node.text, 0, node.text.length - 1)
+        value = kix_lower_expr_at(lower, ast_expr_binop(lower.exprs, op, current, right), node)
+    }
+    if (target.tag == "Path") { return kix_lower_stmt_at(lower, ast_stmt_assign(lower.stmts, target.text, value), node) }
+    if (target.tag == "Field")
+    {
+        let base = kix_lower_expr(lower, store, target.children[0])
+        return kix_lower_stmt_at(lower, ast_stmt_field_assign(lower.stmts, base, target.text, value), node)
+    }
+    if (target.tag == "Index")
+    {
+        let base2 = kix_lower_expr(lower, store, target.children[0])
+        let index = kix_lower_expr(lower, store, target.children[1])
+        return kix_lower_stmt_at(lower, ast_stmt_store_index(lower.stmts, base2, index, value), node)
+    }
+    return kix_lower_fail(lower, target, "assignment target is not representable")
+}
+
+pub fn kix_lower_stmt(lower: &KixLowerer, store: &KixNodeStore, id: i32): i32
+{
+    let node = kix_store_get(store, id)
+    if (node.tag == "Let")
+    {
+        let pattern = kix_store_get(store, node.children[0])
+        if (pattern.tag != "PathPattern") { return kix_lower_fail(lower, pattern, "first backend slice requires a name binding") }
+        let value = kix_lower_expr(lower, store, node.children[1])
+        return kix_lower_stmt_at(lower, ast_stmt_let_typed_mut(lower.stmts, pattern.text, kix_lower_type(node.aux), value, node.flag), node)
+    }
+    if (node.tag == "Return")
+    {
+        if (node.children.length == 0) { return kix_lower_fail(lower, node, "void return is not supported in this slice") }
+        return kix_lower_stmt_at(lower, ast_stmt_return_expr(lower.stmts, kix_lower_expr(lower, store, node.children[0])), node)
+    }
+    if (node.tag == "Assign") { return kix_lower_assignment(lower, store, node) }
+    if (node.tag == "Block")
+    {
+        let mut block_indices: [i32] = []
+        for (block_i in 0 .. node.children.length) { block_indices.push(kix_lower_stmt(lower, store, node.children[block_i])) }
+        return kix_lower_stmt_at(lower, ast_stmt_block_indices(lower.stmts, block_indices), node)
+    }
+    if (node.tag == "While")
+    {
+        let cond = kix_lower_expr(lower, store, node.children[0])
+        let body = kix_lower_stmt(lower, store, node.children[1])
+        return kix_lower_stmt_at(lower, ast_stmt_while(lower.stmts, cond, body), node)
+    }
+    if (node.tag == "For")
+    {
+        let pattern2 = kix_store_get(store, node.children[0])
+        let range = kix_store_get(store, node.children[1])
+        if (pattern2.tag != "PathPattern" or range.tag != "Range") { return kix_lower_fail(lower, node, "only name bindings over ranges are supported") }
+        let start = kix_lower_expr(lower, store, range.children[0])
+        let end = kix_lower_expr(lower, store, range.children[1])
+        let body2 = kix_lower_stmt(lower, store, node.children[2])
+        return kix_lower_stmt_at(lower, ast_stmt_for_range(lower.stmts, pattern2.text, start, end, body2), node)
+    }
+    if (node.tag == "If")
+    {
+        let cond2 = kix_lower_expr(lower, store, node.children[0])
+        let then_stmt = kix_lower_stmt(lower, store, node.children[1])
+        let else_stmt = if (node.children.length > 2) { kix_lower_stmt(lower, store, node.children[2]) } else { ast_stmt_block_indices(lower.stmts, []) }
+        return kix_lower_stmt_at(lower, ast_stmt_if(lower.stmts, cond2, then_stmt, else_stmt), node)
+    }
+    if (node.tag == "Break" or node.tag == "Continue") { return kix_lower_stmt_at(lower, ast_stmt_loop_control(lower.stmts, if (node.tag == "Break") { "break" } else { "continue" }), node) }
+    if (node.tag == "ExprStmt")
+    {
+        if (node.children.length == 0) { return kix_lower_fail(lower, node, "empty expression statement") }
+        let child = kix_store_get(store, node.children[0])
+        if (child.tag == "Assign") { return kix_lower_assignment(lower, store, child) }
+        if (child.tag == "While" or child.tag == "For" or child.tag == "If") { return kix_lower_stmt(lower, store, node.children[0]) }
+        if (child.tag == "Call" and child.children.length > 0)
+        {
+            let callee = kix_store_get(store, child.children[0])
+            if (callee.tag == "Path" and callee.text == "print")
+            {
+                if (child.children.length != 2) { return kix_lower_fail(lower, child, "print currently requires exactly one argument") }
+                return kix_lower_stmt_at(lower, ast_stmt_print(lower.stmts, kix_lower_expr(lower, store, child.children[1])), node)
+            }
+        }
+        return kix_lower_stmt_at(lower, ast_stmt_expr(lower.stmts, kix_lower_expr(lower, store, node.children[0])), node)
+    }
+    if (node.tag == "Call" and node.children.length > 0)
+    {
+        let direct_callee = kix_store_get(store, node.children[0])
+        if (direct_callee.tag == "Path" and direct_callee.text == "print")
+        {
+            if (node.children.length != 2) { return kix_lower_fail(lower, node, "print currently requires exactly one argument") }
+            return kix_lower_stmt_at(lower, ast_stmt_print(lower.stmts, kix_lower_expr(lower, store, node.children[1])), node)
+        }
+    }
+    return kix_lower_stmt_at(lower, ast_stmt_expr(lower.stmts, kix_lower_expr(lower, store, id)), node)
+}
+
+pub fn kix_lower_block(lower: &KixLowerer, store: &KixNodeStore, id: i32): KixLowerBlock
+{
+    let node = kix_store_get(store, id)
+    let mut indices: [i32] = []
+    let mut value_idx = -1
+    for (i in 0 .. node.children.length)
+    {
+        let child = kix_store_get(store, node.children[i])
+        if (node.flag == 1 and i == node.children.length - 1 and child.tag != "Assign" and child.tag != "While" and child.tag != "For")
+        {
+            value_idx = kix_lower_expr(lower, store, node.children[i])
+        }
+        else { indices.push(kix_lower_stmt(lower, store, node.children[i])) }
+    }
+    let block_idx = kix_lower_stmt_at(lower, ast_stmt_block_indices(lower.stmts, indices), node)
+    return KixLowerBlock{ stmt_idx: block_idx, value_idx: value_idx }
+}
+
+pub fn kix_lower_program(program: KixProgram, filename: string): AstProgram
+{
+    let mut lower = KixLowerer{ exprs: expr_store_new(), stmts: stmt_store_new(), ok: 1, error: "", filename: filename }
+    let mut functions: [AstFunction] = []
+    let mut structs: [AstStructDecl] = []
+    for (i in 0 .. program.items.length)
+    {
+        let item = kix_store_get(program.store, program.items[i])
+        if (item.tag == "TypeDecl" and item.aux == "Record")
+        {
+            let mut field_names: [string] = []
+            let mut field_types: [string] = []
+            for (field_i in 0 .. item.children.length)
+            {
+                let field = kix_store_get(program.store, item.children[field_i])
+                let colon = find_last_char(field.text, 58)
+                match colon {
+                    Some(pos) -> {
+                        field_names.push(slice_string(field.text, 0, pos))
+                        field_types.push(kix_lower_type(slice_string(field.text, pos + 1, field.text.length)))
+                    }
+                    None -> { kix_lower_fail(&lower, field, "record field has no type separator") }
+                }
+            }
+            structs.push(AstStructDecl{ name: item.text, field_names: field_names, field_types: field_types, is_c_abi: 0, line: item.line, col: item.col })
+            continue
+        }
+        if (item.tag != "Function") { kix_lower_fail(&lower, item, "top-level item is not supported in the current backend slice"); continue }
+        if (item.children.length == 0) { kix_lower_fail(&lower, item, "function declaration has no body"); continue }
+        let body_node = kix_store_get(program.store, item.children[0])
+        let mut body_idx = -1
+        if (body_node.tag == "Block")
+        {
+            let body = kix_lower_block(&lower, program.store, item.children[0])
+            if (body.value_idx >= 0)
+            {
+                let ret_idx = kix_lower_stmt_at(&lower, ast_stmt_return_expr(lower.stmts, body.value_idx), body_node)
+                let outer = stmt_store_get(lower.stmts, body.stmt_idx)
+                let mut body_indices = outer.stmt_indices
+                body_indices.push(ret_idx)
+                body_idx = kix_lower_stmt_at(&lower, ast_stmt_block_indices(lower.stmts, body_indices), body_node)
+            }
+            else { body_idx = body.stmt_idx }
+        }
+        else { body_idx = kix_lower_stmt_at(&lower, ast_stmt_return_expr(lower.stmts, kix_lower_expr(&lower, program.store, item.children[0])), body_node) }
+        let mut param_names: [string] = []
+        let mut param_types: [string] = []
+        let mut type_params: [string] = []
+        for (j in 0 .. item.names.length)
+        {
+            let name = item.names[j]
+            if (name.length > 1 and compiler_string_byte(name, 0) == 91) { type_params.push(name) }
+            else
+            {
+                param_names.push(name)
+                param_types.push(kix_lower_type(item.types[param_types.length]))
+            }
+        }
+        let func = ast_function_generic_full_vararg(item.text, kix_lower_type(item.aux), body_idx, param_names, param_types, type_params, 0)
+        functions.push(ast_function_with_loc(func, item.line, item.col))
+    }
+    if (lower.ok == 0) { return ast_program_err(lower.error) }
+    return ast_program_ok_functions_with_externs_and_structs(functions, [], structs, lower.exprs, lower.stmts)
+}

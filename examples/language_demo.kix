@@ -1,0 +1,22 @@
+fn fib(n: Int): Int
+{
+    let mut a = 0
+    let mut b = 1
+    for index in 0 .. n {
+        let next = a + b
+        a = b
+        b = next
+    }
+    return a
+}
+
+fn main(): Int
+{
+    let value = fib(10)
+    let description = if value >= 50 { "large" } else { "small" }
+
+    print("Kix demo")
+    print(value)
+    print(description)
+    return 0
+}
