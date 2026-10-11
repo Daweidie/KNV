@@ -1,10 +1,10 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="images/README/image.png">
-    <source media="(prefers-color-scheme: light)" srcset="images/README/image.png">
+    <source media="(prefers-color-scheme: dark)" srcset="images/README/1807057DDfsRhTXUKh7Gk5.png">
+    <source media="(prefers-color-scheme: light)" srcset="images/README/1807057DDfsRhTXUKh7Gk5.png">
     <img
       alt="Kix Programming Language"
-      src="images/README/image.png"
+      src="images/README/1807057DDfsRhTXUKh7Gk5.png"
       width="50%">
   </picture>
 
