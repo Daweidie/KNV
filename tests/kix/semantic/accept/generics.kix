@@ -1,0 +1,13 @@
+type Option[T] = Some(T) | None
+
+fn id[T](value: T): T = value
+
+fn wrap[T](value: T): Option[T] = Some(value)
+
+fn main(): Int {
+    let a = id[Int](1)
+    let b = id(a)
+    let c = wrap[Int](b)
+    let d = id[Str]("x")
+    0
+}

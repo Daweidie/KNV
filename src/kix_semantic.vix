@@ -1,0 +1,2713 @@
+#[no_main]
+import "kix_ast.vix"
+
+// Phase 3 Kix semantics.
+//
+// This module is deliberately independent from the Vix parser/AST consumers:
+// it walks the Kix arena produced by `parse_kix_program` and never hands a Kix
+// tree to the Vix semantic pipeline.  Diagnostics use a dedicated, stable
+// E6xxx range so Kix semantic failures stay distinct from E1100 parse errors.
+
+pub type KixDiag = struct {
+    code: string,
+    title: string,
+    message: string,
+    filename: string,
+    line: i32,
+    col: i32,
+    length: i32
+}
+
+pub type KixSemanticResult = struct {
+    ok: i32,
+    error_count: i32,
+    warning_count: i32,
+    render: string
+}
+
+pub type KixParam = struct {
+    name: string,
+    ty: string,
+    is_self: i32,
+    is_mut: i32
+}
+
+pub type KixFunc = struct {
+    name: string,
+    ret: string,
+    params: [KixParam],
+    generics: [string],
+    is_pub: i32,
+    is_method: i32,
+    is_trait: i32,
+    owner: string,
+    body: i32,
+    node_id: i32
+}
+
+pub type KixField = struct {
+    name: string,
+    ty: string
+}
+
+pub type KixVariant = struct {
+    name: string,
+    fields: [KixField],
+    tuple_tys: [string],
+    is_tuple: i32
+}
+
+pub type KixTypeInfo = struct {
+    name: string,
+    kind: string,
+    alias: string,
+    generics: [string],
+    fields: [KixField],
+    variants: [KixVariant],
+    line: i32,
+    col: i32
+}
+
+pub type KixSem = struct {
+    store: KixNodeStore,
+    filename: string,
+    source: string,
+    funcs: [KixFunc],
+    types: [KixTypeInfo],
+    diags: [KixDiag],
+    error_count: i32,
+    warning_count: i32
+}
+
+pub type KixScope = struct {
+    names: [string],
+    tys: [string],
+    muts: [i32],
+    depths: [i32],
+    lines: [i32],
+    cols: [i32],
+    active_len: i32,
+    depth: i32
+}
+
+pub type KixCtx = struct {
+    ret: string,
+    generics: [string],
+    loop_depth: i32,
+    is_closure: i32
+}
+
+pub type KixTScan = struct {
+    ty: string,
+    pos: i32,
+    ok: i32
+}
+
+pub type KixVariantHit = struct {
+    type_idx: i32,
+    variant_idx: i32
+}
+
+pub fn ks_diag_title(code: string): string
+{
+    return match code {
+        "E6101" -> "undefined symbol"
+        "E6102" -> "duplicate symbol"
+        "E6103" -> "undefined function"
+        "E6104" -> "duplicate function"
+        "E6105" -> "unknown type"
+        "E6106" -> "duplicate type"
+        "E6107" -> "duplicate parameter"
+        "E6108" -> "duplicate field"
+        "E6109" -> "unknown field"
+        "E6110" -> "duplicate variant"
+        "E6111" -> "missing field"
+        "E6112" -> "duplicate initializer field"
+        "E6201" -> "type mismatch"
+        "E6202" -> "implicit numeric conversion"
+        "E6203" -> "invalid cast"
+        "E6204" -> "non-bool condition"
+        "E6205" -> "branch type mismatch"
+        "E6206" -> "non-integer index"
+        "E6207" -> "invalid index target"
+        "E6208" -> "unknown field"
+        "E6209" -> "invalid operator operands"
+        "E6210" -> "invalid argument count"
+        "E6211" -> "invalid argument type"
+        "E6212" -> "invalid return type"
+        "E6301" -> "duplicate binding"
+        "E6302" -> "invalid match pattern"
+        "E6303" -> "unknown variant"
+        "E6304" -> "non-exhaustive match"
+        "E6305" -> "inconsistent or-pattern bindings"
+        "E6401" -> "borrow requires a place"
+        "E6402" -> "cannot borrow as mutable"
+        "E6501" -> "invalid `?` operand"
+        "E6502" -> "invalid `?` return context"
+        "E6503" -> "invalid `??` operand"
+        "E6601" -> "assignment to immutable binding"
+        "E6602" -> "break or continue outside loop"
+        _ -> "kix semantic error"
+    }
+}
+
+pub fn ks_error(sem: &KixSem, code: string, message: string, line: i32, col: i32, length: i32)
+{
+    sem.diags.push(KixDiag{ code: code, title: ks_diag_title(code), message: message, filename: sem.filename, line: line, col: col, length: length })
+    sem.error_count += 1
+}
+
+pub fn ks_diag_render(d: KixDiag): string
+{
+    return d.code + ": " + d.title + ": " + d.message + "\n  --> " + d.filename + ":" + i32_to_str(d.line) + ":" + i32_to_str(d.col)
+}
+
+// ---------------------------------------------------------------------------
+// Small string helpers (the bootstrap has no library string search routines).
+// ---------------------------------------------------------------------------
+
+pub fn ks_is_space_byte(c: i32): i32
+{
+    if (c == 32 or c == 9 or c == 10 or c == 13) { return 1 }
+    return 0
+}
+
+pub fn ks_is_ident_byte(c: i32): i32
+{
+    if (is_ident(c) == 1 or c == 95) { return 1 }
+    return 0
+}
+
+pub fn ks_sub(s: string, start: i32, stop: i32): string
+{
+    let mut out = ""
+    let n = s.length
+    let mut i = start
+    if (i < 0) { i = 0 }
+    while (i < stop and i < n)
+    {
+        out = out + char_string(compiler_string_byte(s, i))
+        i += 1
+    }
+    return out
+}
+
+pub fn ks_trim(s: string): string
+{
+    let n = s.length
+    let mut a = 0
+    let mut b = n
+    while (a < b and ks_is_space_byte(compiler_string_byte(s, a)) == 1) { a += 1 }
+    while (b > a and ks_is_space_byte(compiler_string_byte(s, b - 1)) == 1) { b -= 1 }
+    return ks_sub(s, a, b)
+}
+
+pub fn ks_blank(s: string): i32
+{
+    if (ks_trim(s) == "") { return 1 }
+    return 0
+}
+
+pub fn ks_starts(s: string, prefix: string): i32
+{
+    if (s.length < prefix.length) { return 0 }
+    for (i in 0 .. prefix.length)
+    {
+        if (compiler_string_byte(s, i) != compiler_string_byte(prefix, i)) { return 0 }
+    }
+    return 1
+}
+
+pub fn ks_ends(s: string, suffix: string): i32
+{
+    if (s.length < suffix.length) { return 0 }
+    let off = s.length - suffix.length
+    for (i in 0 .. suffix.length)
+    {
+        if (compiler_string_byte(s, off + i) != compiler_string_byte(suffix, i)) { return 0 }
+    }
+    return 1
+}
+
+pub fn ks_find_sub(s: string, needle: string): i32
+{
+    if (needle.length == 0 or s.length < needle.length) { return -1 }
+    let mut i = 0
+    while (i + needle.length <= s.length)
+    {
+        let mut hit = 1
+        for (j in 0 .. needle.length)
+        {
+            if (compiler_string_byte(s, i + j) != compiler_string_byte(needle, j)) { hit = 0 }
+        }
+        if (hit == 1) { return i }
+        i += 1
+    }
+    return -1
+}
+
+pub fn ks_contains(s: string, needle: string): i32
+{
+    if (ks_find_sub(s, needle) >= 0) { return 1 }
+    return 0
+}
+
+pub fn ks_scan_keyword(s: string, i: i32, kw: string): i32
+{
+    if (i + kw.length > s.length) { return 0 }
+    for (j in 0 .. kw.length)
+    {
+        if (compiler_string_byte(s, i + j) != compiler_string_byte(kw, j)) { return 0 }
+    }
+    let after = i + kw.length
+    if (after < s.length and ks_is_ident_byte(compiler_string_byte(s, after)) == 1) { return 0 }
+    return 1
+}
+
+pub fn ks_match_bracket(s: string, i: i32, open: i32, close: i32): i32
+{
+    let n = s.length
+    let mut depth = 0
+    let mut k = i
+    while (k < n)
+    {
+        let c = compiler_string_byte(s, k)
+        if (c == open) { depth += 1 }
+        elif (c == close)
+        {
+            depth -= 1
+            if (depth == 0) { return k }
+        }
+        k += 1
+    }
+    return -1
+}
+
+pub fn ks_split_top(s: string, sep: i32): [string]
+{
+    let mut out: [string] = []
+    let n = s.length
+    let mut depth = 0
+    let mut start = 0
+    let mut i = 0
+    while (i < n)
+    {
+        let c = compiler_string_byte(s, i)
+        if (c == '(' or c == '[' or c == '{') { depth += 1 }
+        elif (c == ')' or c == ']' or c == '}') { depth -= 1 }
+        elif (c == sep and depth == 0)
+        {
+            out.push(ks_sub(s, start, i))
+            start = i + 1
+        }
+        i += 1
+    }
+    out.push(ks_sub(s, start, n))
+    return out
+}
+
+pub fn ks_names_equal(a: [string], b: [string]): i32
+{
+    if (a.length != b.length) { return 0 }
+    for (i in 0 .. a.length)
+    {
+        let mut found = 0
+        for (j in 0 .. b.length)
+        {
+            if (a[i] == b[j]) { found = 1 }
+        }
+        if (found == 0) { return 0 }
+    }
+    return 1
+}
+
+pub fn ks_has_name(names: [string], name: string): i32
+{
+    for (i in 0 .. names.length)
+    {
+        if (names[i] == name) { return 1 }
+    }
+    return 0
+}
+
+pub fn ks_name_upper(name: string): i32
+{
+    if (name.length == 0) { return 0 }
+    let c = compiler_string_byte(name, 0)
+    if (c >= 65 and c <= 90) { return 1 }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// Kix type normalization.  Types flow through the parser as raw text, so this
+// turns them into a canonical string form before any comparison.
+// ---------------------------------------------------------------------------
+
+pub fn ks_prim_alias(name: string): string
+{
+    return match name {
+        "Int" -> "i64"
+        "isize" -> "i64"
+        "UInt" -> "u64"
+        "usize" -> "u64"
+        "Bool" -> "bool"
+        "Char" -> "char"
+        "Str" -> "string"
+        "String" -> "string"
+        "void" -> "()"
+        "unit" -> "()"
+        _ -> name
+    }
+}
+
+pub fn ks_typ_scan_fn(s: string, i: i32): KixTScan
+{
+    let n = s.length
+    let mut j = i + 2
+    while (j < n and ks_is_space_byte(compiler_string_byte(s, j)) == 1) { j += 1 }
+    let mut params = "()"
+    if (j < n and compiler_string_byte(s, j) == '(')
+    {
+        let close = ks_match_bracket(s, j, '(', ')')
+        if (close < 0) { return KixTScan{ ty: "unknown", pos: n, ok: 0 } }
+        let parts = ks_split_top(ks_sub(s, j + 1, close), ',')
+        if (parts.length == 1 and ks_blank(parts[0]) == 1)
+        {
+            params = "()"
+        }
+        else
+        {
+            let mut pout = "("
+            for (p in 0 .. parts.length)
+            {
+                if (p > 0) { pout = pout + ", " }
+                pout = pout + ks_parse_type(parts[p])
+            }
+            params = pout + ")"
+        }
+        j = close + 1
+    }
+    while (j < n and ks_is_space_byte(compiler_string_byte(s, j)) == 1) { j += 1 }
+    let mut ret = "()"
+    if (j < n and compiler_string_byte(s, j) == ':')
+    {
+        let r = ks_typ_scan(s, j + 1)
+        ret = r.ty
+        j = r.pos
+    }
+    return KixTScan{ ty: "fn" + params + " -> " + ret, pos: j, ok: 1 }
+}
+
+pub fn ks_typ_scan(s: string, i: i32): KixTScan
+{
+    let n = s.length
+    let mut i2 = i
+    while (i2 < n and ks_is_space_byte(compiler_string_byte(s, i2)) == 1) { i2 += 1 }
+    if (i2 >= n) { return KixTScan{ ty: "unknown", pos: n, ok: 0 } }
+    let c = compiler_string_byte(s, i2)
+    if (c == '&')
+    {
+        let mut j = i2 + 1
+        while (j < n and ks_is_space_byte(compiler_string_byte(s, j)) == 1) { j += 1 }
+        if (ks_scan_keyword(s, j, "mut") == 1)
+        {
+            let inner = ks_typ_scan(s, j + 3)
+            return KixTScan{ ty: "&mut " + inner.ty, pos: inner.pos, ok: inner.ok }
+        }
+        let inner = ks_typ_scan(s, i2 + 1)
+        return KixTScan{ ty: "&" + inner.ty, pos: inner.pos, ok: inner.ok }
+    }
+    if (c == '*')
+    {
+        let inner = ks_typ_scan(s, i2 + 1)
+        return KixTScan{ ty: "*" + inner.ty, pos: inner.pos, ok: inner.ok }
+    }
+    if (c == '!')
+    {
+        return KixTScan{ ty: "!", pos: i2 + 1, ok: 1 }
+    }
+    if (c == '(')
+    {
+        let close = ks_match_bracket(s, i2, '(', ')')
+        if (close < 0) { return KixTScan{ ty: "unknown", pos: n, ok: 0 } }
+        let parts = ks_split_top(ks_sub(s, i2 + 1, close), ',')
+        if (parts.length == 1 and ks_blank(parts[0]) == 1)
+        {
+            return KixTScan{ ty: "()", pos: close + 1, ok: 1 }
+        }
+        let mut out = "("
+        for (k in 0 .. parts.length)
+        {
+            if (k > 0) { out = out + ", " }
+            out = out + ks_parse_type(parts[k])
+        }
+        return KixTScan{ ty: out + ")", pos: close + 1, ok: 1 }
+    }
+    if (c == '[')
+    {
+        let close = ks_match_bracket(s, i2, '[', ']')
+        if (close < 0) { return KixTScan{ ty: "unknown", pos: n, ok: 0 } }
+        let elem = ks_parse_type(ks_sub(s, i2 + 1, close))
+        return KixTScan{ ty: "[" + elem + "]", pos: close + 1, ok: 1 }
+    }
+    if (ks_scan_keyword(s, i2, "fn") == 1)
+    {
+        return ks_typ_scan_fn(s, i2)
+    }
+    let mut name = ""
+    let mut k = i2
+    while (k < n and ks_is_ident_byte(compiler_string_byte(s, k)) == 1)
+    {
+        name = name + char_string(compiler_string_byte(s, k))
+        k += 1
+    }
+    if (name == "") { return KixTScan{ ty: "unknown", pos: i2 + 1, ok: 0 } }
+    let mut m = k
+    while (m < n and ks_is_space_byte(compiler_string_byte(s, m)) == 1) { m += 1 }
+    if (m < n and compiler_string_byte(s, m) == '[')
+    {
+        let close = ks_match_bracket(s, m, '[', ']')
+        if (close < 0) { return KixTScan{ ty: "unknown", pos: n, ok: 0 } }
+        let parts = ks_split_top(ks_sub(s, m + 1, close), ',')
+        let mut out = ks_prim_alias(name) + "["
+        for (p in 0 .. parts.length)
+        {
+            if (p > 0) { out = out + ", " }
+            out = out + ks_parse_type(parts[p])
+        }
+        return KixTScan{ ty: out + "]", pos: close + 1, ok: 1 }
+    }
+    return KixTScan{ ty: ks_prim_alias(name), pos: k, ok: 1 }
+}
+
+pub fn ks_parse_type(raw: string): string
+{
+    let t = ks_trim(raw)
+    if (t == "" or t == "_") { return "unknown" }
+    let scan = ks_typ_scan(t, 0)
+    if (scan.ok == 0) { return "unknown" }
+    return scan.ty
+}
+
+pub fn ks_ty_is_unknown(ty: string): i32 => if (ty == "" or ty == "unknown") { 1 } else { 0 }
+pub fn ks_ty_is_error(ty: string): i32 => if (ty == "error") { 1 } else { 0 }
+pub fn ks_ty_is_never(ty: string): i32 => if (ty == "!") { 1 } else { 0 }
+pub fn ks_ty_is_unit(ty: string): i32 => if (ty == "" or ty == "()") { 1 } else { 0 }
+pub fn ks_ty_is_bool(ty: string): i32 => if (ty == "bool") { 1 } else { 0 }
+pub fn ks_ty_is_char(ty: string): i32 => if (ty == "char") { 1 } else { 0 }
+pub fn ks_ty_is_string(ty: string): i32 => if (ty == "string") { 1 } else { 0 }
+
+pub fn ks_ty_is_signed(ty: string): i32
+{
+    return match ty { "i8" | "i16" | "i32" | "i64" -> 1 _ -> 0 }
+}
+
+pub fn ks_ty_is_unsigned(ty: string): i32
+{
+    return match ty { "u8" | "u16" | "u32" | "u64" -> 1 _ -> 0 }
+}
+
+pub fn ks_ty_is_float(ty: string): i32
+{
+    return match ty { "f32" | "f64" -> 1 _ -> 0 }
+}
+
+pub fn ks_ty_is_int(ty: string): i32
+{
+    if (ks_ty_is_signed(ty) == 1 or ks_ty_is_unsigned(ty) == 1) { return 1 }
+    return 0
+}
+
+pub fn ks_ty_is_numeric(ty: string): i32
+{
+    if (ks_ty_is_int(ty) == 1 or ks_ty_is_float(ty) == 1) { return 1 }
+    return 0
+}
+
+pub fn ks_ty_is_array(ty: string): i32
+{
+    if (ty.length > 1 and compiler_string_byte(ty, 0) == '[' and compiler_string_byte(ty, ty.length - 1) == ']') { return 1 }
+    return 0
+}
+
+pub fn ks_ty_elem(ty: string): string
+{
+    if (ks_ty_is_array(ty) == 0) { return "unknown" }
+    return ks_sub(ty, 1, ty.length - 1)
+}
+
+pub fn ks_ty_is_ref(ty: string): i32
+{
+    if (ty.length > 0 and compiler_string_byte(ty, 0) == '&') { return 1 }
+    return 0
+}
+
+pub fn ks_ty_is_mut_ref(ty: string): i32
+{
+    if (ks_starts(ty, "&mut ") == 1) { return 1 }
+    return 0
+}
+
+pub fn ks_ty_is_ptr(ty: string): i32
+{
+    if (ty.length > 0 and compiler_string_byte(ty, 0) == '*') { return 1 }
+    return 0
+}
+
+pub fn ks_ty_pointee(ty: string): string
+{
+    if (ks_starts(ty, "&mut ") == 1) { return ks_sub(ty, 5, ty.length) }
+    if (ks_ty_is_ref(ty) == 1) { return ks_sub(ty, 1, ty.length) }
+    if (ks_ty_is_ptr(ty) == 1) { return ks_sub(ty, 1, ty.length) }
+    return ty
+}
+
+pub fn ks_ty_is_tuple(ty: string): i32
+{
+    if (ty.length > 2 and compiler_string_byte(ty, 0) == '(' and compiler_string_byte(ty, ty.length - 1) == ')') { return 1 }
+    return 0
+}
+
+pub fn ks_ty_tuple_elems(ty: string): [string]
+{
+    if (ks_ty_is_tuple(ty) == 0) { return [] }
+    return ks_split_top(ks_sub(ty, 1, ty.length - 1), ',')
+}
+
+pub fn ks_ty_is_fn(ty: string): i32
+{
+    if (ks_starts(ty, "fn") == 1 and ks_contains(ty, "->") == 1) { return 1 }
+    return 0
+}
+
+pub fn ks_ty_fn_ret(ty: string): string
+{
+    if (ks_ty_is_fn(ty) == 0) { return "unknown" }
+    let arrow = ks_find_sub(ty, "->")
+    if (arrow < 0) { return "unknown" }
+    return ks_trim(ks_sub(ty, arrow + 2, ty.length))
+}
+
+pub fn ks_ty_fn_params(ty: string): [string]
+{
+    if (ks_ty_is_fn(ty) == 0) { return [] }
+    let open = ks_find_sub(ty, "(")
+    if (open < 0) { return [] }
+    let close = ks_match_bracket(ty, open, '(', ')')
+    if (close < 0) { return [] }
+    let parts = ks_split_top(ks_sub(ty, open + 1, close), ',')
+    let mut out: [string] = []
+    for (i in 0 .. parts.length)
+    {
+        if (ks_blank(parts[i]) == 0) { out.push(ks_trim(parts[i])) }
+    }
+    return out
+}
+
+pub fn ks_ty_base(ty: string): string
+{
+    let mut t = ty
+    if (ks_starts(t, "&mut ") == 1) { t = ks_sub(t, 5, t.length) }
+    elif (ks_ty_is_ref(t) == 1 or ks_ty_is_ptr(t) == 1) { t = ks_sub(t, 1, t.length) }
+    let mut out = ""
+    let mut i = 0
+    while (i < t.length and ks_is_ident_byte(compiler_string_byte(t, i)) == 1)
+    {
+        out = out + char_string(compiler_string_byte(t, i))
+        i += 1
+    }
+    return out
+}
+
+pub fn ks_ty_args(ty: string): [string]
+{
+    let open = ks_find_sub(ty, "[")
+    if (open < 0) { return [] }
+    let close = ks_match_bracket(ty, open, '[', ']')
+    if (close < 0) { return [] }
+    return ks_split_top(ks_sub(ty, open + 1, close), ',')
+}
+
+pub fn ks_ty_is_named(ty: string): i32
+{
+    return match ks_ty_base(ty) {
+        "" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "bool" | "char" | "string" -> 0
+        _ -> if (ks_ty_is_fn(ty) == 1) { 0 } else { 1 }
+    }
+}
+
+pub fn ks_ty_is_option(ty: string): i32 => if (ks_ty_base(ty) == "Option") { 1 } else { 0 }
+pub fn ks_ty_is_result(ty: string): i32 => if (ks_ty_base(ty) == "Result") { 1 } else { 0 }
+
+pub fn ks_ty_option_inner(ty: string): string
+{
+    let args = ks_ty_args(ty)
+    if (args.length < 1) { return "unknown" }
+    return ks_trim(args[0])
+}
+
+pub fn ks_ty_result_ok(ty: string): string
+{
+    let args = ks_ty_args(ty)
+    if (args.length < 1) { return "unknown" }
+    return ks_trim(args[0])
+}
+
+pub fn ks_ty_result_err(ty: string): string
+{
+    let args = ks_ty_args(ty)
+    if (args.length < 2) { return "unknown" }
+    return ks_trim(args[1])
+}
+
+pub fn ks_ty_contains_unknown(ty: string): i32
+{
+    if (ks_contains(ty, "unknown") == 1) { return 1 }
+    return 0
+}
+
+pub fn ks_replace_ident(ty: string, name: string, repl: string): string
+{
+    let mut out = ""
+    let mut i = 0
+    while (i < ty.length)
+    {
+        let c = compiler_string_byte(ty, i)
+        if (ks_is_ident_byte(c) == 1)
+        {
+            let start = i
+            while (i < ty.length and ks_is_ident_byte(compiler_string_byte(ty, i)) == 1) { i += 1 }
+            let token = ks_sub(ty, start, i)
+            if (token == name) { out = out + repl } else { out = out + token }
+        }
+        else
+        {
+            out = out + char_string(c)
+            i += 1
+        }
+    }
+    return out
+}
+
+pub fn ks_apply_generics(ty: string, generics: [string], args: [string]): string
+{
+    let mut out = ty
+    for (i in 0 .. generics.length)
+    {
+        if (i < args.length)
+        {
+            out = ks_replace_ident(out, generics[i], args[i])
+        }
+    }
+    return out
+}
+
+pub fn ks_uses_generic(ty: string, generics: [string]): i32
+{
+    for (i in 0 .. generics.length)
+    {
+        if (ks_replace_ident(ty, generics[i], "@") != ty) { return 1 }
+    }
+    return 0
+}
+
+pub fn ks_generic_unknown(ty: string, generics: [string]): string
+{
+    let mut out = ty
+    for (i in 0 .. generics.length)
+    {
+        out = ks_replace_ident(out, generics[i], "unknown")
+    }
+    return out
+}
+
+pub type KixRecResolve = struct {
+    found: i32,
+    type_name: string,
+    fields: [KixField],
+    generics: [string]
+}
+
+pub fn ks_resolve_record(sem: &KixSem, subject_type: string, name: string): KixRecResolve
+{
+    let mut base = ks_ty_base(subject_type)
+    if (name != "") { base = ks_ty_base(ks_parse_type(name)) }
+    let ti = ks_find_type(sem, base)
+    if (ti < 0)
+    {
+        let vh = ks_find_variant_any(sem, name)
+        if (vh.type_idx >= 0)
+        {
+            let ti2 = sem.types[vh.type_idx]
+            let variant = ti2.variants[vh.variant_idx]
+            return KixRecResolve{ found: 1, type_name: ti2.name, fields: variant.fields, generics: ti2.generics }
+        }
+        return KixRecResolve{ found: 0, type_name: name, fields: [], generics: [] }
+    }
+    let ti3 = sem.types[ti]
+    if (ti3.kind == "Sum")
+    {
+        let vi = ks_find_variant_in(ti3, name)
+        if (vi >= 0)
+        {
+            return KixRecResolve{ found: 1, type_name: ti3.name, fields: ti3.variants[vi].fields, generics: ti3.generics }
+        }
+        return KixRecResolve{ found: 0, type_name: ti3.name, fields: [], generics: ti3.generics }
+    }
+    return KixRecResolve{ found: 1, type_name: ti3.name, fields: ti3.fields, generics: ti3.generics }
+}
+
+// ---------------------------------------------------------------------------
+// Node access helpers.
+// ---------------------------------------------------------------------------
+
+pub fn ks_ok_node(sem: &KixSem, id: i32): i32
+{
+    if (id < 0 or id >= sem.store.nodes.length) { return 0 }
+    return 1
+}
+
+pub fn ks_kind(sem: &KixSem, id: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "" }
+    return sem.store.nodes[id].tag
+}
+
+pub fn ks_text(sem: &KixSem, id: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "" }
+    return sem.store.nodes[id].text
+}
+
+pub fn ks_aux(sem: &KixSem, id: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "" }
+    return sem.store.nodes[id].aux
+}
+
+pub fn ks_flag(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    return sem.store.nodes[id].flag
+}
+
+pub fn ks_line(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    return sem.store.nodes[id].line
+}
+
+pub fn ks_col(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    return sem.store.nodes[id].col
+}
+
+pub fn ks_nchild(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    return sem.store.nodes[id].children.length
+}
+
+pub fn ks_child(sem: &KixSem, id: i32, i: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return -1 }
+    if (i < 0 or i >= sem.store.nodes[id].children.length) { return -1 }
+    return sem.store.nodes[id].children[i]
+}
+
+pub fn ks_nname(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    return sem.store.nodes[id].names.length
+}
+
+pub fn ks_name(sem: &KixSem, id: i32, i: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "" }
+    if (i < 0 or i >= sem.store.nodes[id].names.length) { return "" }
+    return sem.store.nodes[id].names[i]
+}
+
+pub fn ks_ntype(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    return sem.store.nodes[id].types.length
+}
+
+pub fn ks_type_of(sem: &KixSem, id: i32, i: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "" }
+    if (i < 0 or i >= sem.store.nodes[id].types.length) { return "" }
+    return sem.store.nodes[id].types[i]
+}
+
+pub fn ks_len_id(sem: &KixSem, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 1 }
+    let node = sem.store.nodes[id]
+    if (node.text != "") { return node.text.length }
+    return 1
+}
+
+// ---------------------------------------------------------------------------
+// Scope management.
+// ---------------------------------------------------------------------------
+
+pub fn ks_scope_new(): KixScope
+{
+    return KixScope{ names: [], tys: [], muts: [], depths: [], lines: [], cols: [], active_len: 0, depth: 0 }
+}
+
+pub fn ks_scope_push(sc: &KixScope) { sc.depth += 1 }
+
+pub fn ks_scope_pop(sc: &KixScope)
+{
+    if (sc.depth <= 0) { return }
+    let mut keep = sc.active_len
+    while (keep > 0)
+    {
+        if (sc.depths[keep - 1] >= sc.depth) { keep -= 1 } else { break }
+    }
+    sc.active_len = keep
+    sc.depth -= 1
+}
+
+pub fn ks_scope_find_current(sc: &KixScope, name: string): i32
+{
+    for (i in 0 .. sc.active_len)
+    {
+        if (sc.names[i] == name and sc.depths[i] == sc.depth) { return i }
+    }
+    return -1
+}
+
+pub fn ks_scope_lookup(sc: &KixScope, name: string): i32
+{
+    let mut i = sc.active_len - 1
+    while (i >= 0)
+    {
+        if (sc.names[i] == name and sc.depths[i] <= sc.depth) { return i }
+        i -= 1
+    }
+    return -1
+}
+
+pub fn ks_declare(sem: &KixSem, sc: &KixScope, name: string, ty: string, is_mut: i32, line: i32, col: i32): i32
+{
+    if (name == "_" or name == "") { return 1 }
+    if (ks_scope_find_current(sc, name) >= 0)
+    {
+        ks_error(sem, "E6102", "duplicate symbol '" + name + "'", line, col, name.length)
+        return 0
+    }
+    let idx = sc.active_len
+    if (idx < sc.names.length)
+    {
+        sc.names[idx] = name
+        sc.tys[idx] = ty
+        sc.muts[idx] = is_mut
+        sc.depths[idx] = sc.depth
+        sc.lines[idx] = line
+        sc.cols[idx] = col
+    }
+    else
+    {
+        sc.names.push(name)
+        sc.tys.push(ty)
+        sc.muts.push(is_mut)
+        sc.depths.push(sc.depth)
+        sc.lines.push(line)
+        sc.cols.push(col)
+    }
+    sc.active_len += 1
+    return 1
+}
+
+pub fn ks_scope_mark_mut(sc: &KixScope, name: string)
+{
+    let idx = ks_scope_find_current(sc, name)
+    if (idx >= 0) { sc.muts[idx] = 1 }
+}
+
+pub fn ks_declare_existing(sc: &KixScope, name: string, ty: string)
+{
+    if (name == "" or name == "_") { return }
+    if (ks_scope_find_current(sc, name) >= 0) { return }
+    let idx = sc.active_len
+    if (idx < sc.names.length)
+    {
+        sc.names[idx] = name
+        sc.tys[idx] = ty
+        sc.muts[idx] = 0
+        sc.depths[idx] = sc.depth
+        sc.lines[idx] = 0
+        sc.cols[idx] = 0
+    }
+    else
+    {
+        sc.names.push(name)
+        sc.tys.push(ty)
+        sc.muts.push(0)
+        sc.depths.push(sc.depth)
+        sc.lines.push(0)
+        sc.cols.push(0)
+    }
+    sc.active_len += 1
+}
+
+// ---------------------------------------------------------------------------
+// Table construction.
+// ---------------------------------------------------------------------------
+
+pub fn ks_find_func(sem: &KixSem, name: string): i32
+{
+    for (i in 0 .. sem.funcs.length)
+    {
+        if (sem.funcs[i].name == name and sem.funcs[i].is_method == 0) { return i }
+    }
+    return -1
+}
+
+pub fn ks_find_method(sem: &KixSem, owner: string, name: string): i32
+{
+    for (i in 0 .. sem.funcs.length)
+    {
+        if (sem.funcs[i].name == name and sem.funcs[i].is_method == 1 and sem.funcs[i].owner == owner) { return i }
+    }
+    return -1
+}
+
+pub fn ks_find_method_any(sem: &KixSem, name: string): i32
+{
+    for (i in 0 .. sem.funcs.length)
+    {
+        if (sem.funcs[i].name == name and (sem.funcs[i].is_method == 1 or sem.funcs[i].is_trait == 1)) { return i }
+    }
+    return -1
+}
+
+pub fn ks_find_type(sem: &KixSem, base: string): i32
+{
+    for (i in 0 .. sem.types.length)
+    {
+        if (sem.types[i].name == base) { return i }
+    }
+    return -1
+}
+
+pub fn ks_find_field(ti: KixTypeInfo, name: string): i32
+{
+    for (i in 0 .. ti.fields.length)
+    {
+        if (ti.fields[i].name == name) { return i }
+    }
+    return -1
+}
+
+pub fn ks_find_variant_in(ti: KixTypeInfo, name: string): i32
+{
+    for (i in 0 .. ti.variants.length)
+    {
+        if (ti.variants[i].name == name) { return i }
+    }
+    return -1
+}
+
+pub fn ks_find_variant_any(sem: &KixSem, name: string): KixVariantHit
+{
+    for (i in 0 .. sem.types.length)
+    {
+        let v = ks_find_variant_in(sem.types[i], name)
+        if (v >= 0) { return KixVariantHit{ type_idx: i, variant_idx: v } }
+    }
+    return KixVariantHit{ type_idx: -1, variant_idx: -1 }
+}
+
+pub fn ks_field_from_text(text: string): KixField
+{
+    let colon = ks_find_sub(text, ":")
+    if (colon < 0) { return KixField{ name: ks_trim(text), ty: "unknown" } }
+    return KixField{ name: ks_trim(ks_sub(text, 0, colon)), ty: ks_parse_type(ks_sub(text, colon + 1, text.length)) }
+}
+
+pub fn ks_generic_from_text(text: string): string
+{
+    let colon = ks_find_sub(text, ":")
+    if (colon >= 0) { return ks_trim(ks_sub(text, 0, colon)) }
+    return ks_trim(text)
+}
+
+pub fn ks_func_from_node(sem: &KixSem, id: i32, is_method: i32, is_trait: i32, owner: string): KixFunc
+{
+    let mut params: [KixParam] = []
+    let mut generics: [string] = []
+    let nn = ks_nname(sem, id)
+    for (i in 0 .. nn)
+    {
+        let nm = ks_name(sem, id, i)
+        if (nm.length > 1 and compiler_string_byte(nm, 0) == '[' and compiler_string_byte(nm, nm.length - 1) == ']')
+        {
+            generics.push(ks_sub(nm, 1, nm.length - 1))
+        }
+        else
+        {
+            let mut nm = ks_name(sem, id, i)
+            let mut is_mut = 0
+            if (ks_starts(nm, "mut ") == 1) { nm = ks_sub(nm, 4, nm.length); is_mut = 1 }
+            let raw_ty = if (i < ks_ntype(sem, id)) { ks_type_of(sem, id, i) } else { "" }
+            let is_self = if (nm == "self") { 1 } else { 0 }
+            let ty = if (is_self == 1) { "Self" } else { ks_parse_type(raw_ty) }
+            params.push(KixParam{ name: nm, ty: ty, is_self: is_self, is_mut: is_mut })
+        }
+    }
+    let ret = ks_parse_type(ks_aux(sem, id))
+    let body = if (ks_nchild(sem, id) > 0) { ks_child(sem, id, 0) } else { -1 }
+    return KixFunc{ name: ks_text(sem, id), ret: ret, params: params, generics: generics, is_pub: ks_flag(sem, id), is_method: is_method, is_trait: is_trait, owner: owner, body: body, node_id: id }
+}
+
+pub fn ks_container_trait(header: string): string
+{
+    let at = ks_find_sub(header, " for ")
+    if (at < 0) { return "" }
+    return ks_trim(ks_sub(header, 0, at))
+}
+
+pub fn ks_container_owner(header: string): string
+{
+    let at = ks_find_sub(header, " for ")
+    if (at < 0) { return ks_trim(header) }
+    return ks_trim(ks_sub(header, at + 5, header.length))
+}
+
+pub fn ks_collect_types(sem: &KixSem, items: [i32])
+{
+    for (i in 0 .. items.length)
+    {
+        let id = items[i]
+        if (ks_kind(sem, id) != "TypeDecl") { continue }
+        let name = ks_text(sem, id)
+        if (ks_find_type(sem, name) >= 0)
+        {
+            ks_error(sem, "E6106", "duplicate type '" + name + "'", ks_line(sem, id), ks_col(sem, id), name.length)
+            continue
+        }
+        let kind = ks_aux(sem, id)
+        let mut generics: [string] = []
+        for (g in 0 .. ks_nname(sem, id)) { generics.push(ks_generic_from_text(ks_name(sem, id, g))) }
+        let mut fields: [KixField] = []
+        let mut variants: [KixVariant] = []
+        let mut alias = ""
+        if (kind == "Record")
+        {
+            for (c in 0 .. ks_nchild(sem, id))
+            {
+                let f = ks_field_from_text(ks_text(sem, ks_child(sem, id, c)))
+                if (ks_field_in(fields, f.name) >= 0)
+                {
+                    ks_error(sem, "E6108", "duplicate field '" + f.name + "' in type '" + name + "'", ks_line(sem, id), ks_col(sem, id), name.length)
+                }
+                else { fields.push(f) }
+            }
+        }
+        elif (kind == "Sum")
+        {
+            for (c in 0 .. ks_nchild(sem, id))
+            {
+                let vid = ks_child(sem, id, c)
+                let vname = ks_text(sem, vid)
+                if (ks_has_variant(variants, vname) >= 0)
+                {
+                    ks_error(sem, "E6110", "duplicate variant '" + vname + "' in type '" + name + "'", ks_line(sem, vid), ks_col(sem, vid), vname.length)
+                    continue
+                }
+                let payload = ks_child(sem, vid, 0)
+                let mut vfields: [KixField] = []
+                let mut ttys: [string] = []
+                let mut is_tuple = 0
+                for (p in 0 .. ks_nchild(sem, vid))
+                {
+                    let pid = ks_child(sem, vid, p)
+                    if (ks_kind(sem, pid) == "Field") { vfields.push(ks_field_from_text(ks_text(sem, pid))) }
+                    else { is_tuple = 1; ttys.push(ks_parse_type(ks_text(sem, pid))) }
+                }
+                variants.push(KixVariant{ name: vname, fields: vfields, tuple_tys: ttys, is_tuple: is_tuple })
+            }
+        }
+        else
+        {
+            if (ks_nchild(sem, id) > 0) { alias = ks_parse_type(ks_text(sem, ks_child(sem, id, 0))) }
+        }
+        sem.types.push(KixTypeInfo{ name: name, kind: kind, alias: alias, generics: generics, fields: fields, variants: variants, line: ks_line(sem, id), col: ks_col(sem, id) })
+    }
+}
+
+pub fn ks_field_in(fields: [KixField], name: string): i32
+{
+    for (i in 0 .. fields.length)
+    {
+        if (fields[i].name == name) { return i }
+    }
+    return -1
+}
+
+pub fn ks_has_variant(variants: [KixVariant], name: string): i32
+{
+    for (i in 0 .. variants.length)
+    {
+        if (variants[i].name == name) { return i }
+    }
+    return -1
+}
+
+pub fn ks_collect_funcs(sem: &KixSem, items: [i32])
+{
+    for (i in 0 .. items.length)
+    {
+        let id = items[i]
+        let tag = ks_kind(sem, id)
+        if (tag == "Function")
+        {
+            let f = ks_func_from_node(sem, id, 0, 0, "")
+            if (ks_find_func(sem, f.name) >= 0)
+            {
+                ks_error(sem, "E6104", "duplicate function '" + f.name + "'", ks_line(sem, id), ks_col(sem, id), f.name.length)
+            }
+            else { sem.funcs.push(f) }
+        }
+        elif (tag == "TraitDecl")
+        {
+            let owner = ks_ty_base(ks_parse_type(ks_text(sem, id)))
+            for (c in 0 .. ks_nchild(sem, id))
+            {
+                let mid = ks_child(sem, id, c)
+                if (ks_kind(sem, mid) != "Function") { continue }
+                sem.funcs.push(ks_func_from_node(sem, mid, 0, 1, owner))
+            }
+        }
+        elif (tag == "ImplDecl")
+        {
+            let owner = ks_ty_base(ks_parse_type(ks_container_owner(ks_text(sem, id))))
+            for (c in 0 .. ks_nchild(sem, id))
+            {
+                let mid = ks_child(sem, id, c)
+                if (ks_kind(sem, mid) != "Function") { continue }
+                sem.funcs.push(ks_func_from_node(sem, mid, 1, 0, owner))
+            }
+        }
+    }
+}
+
+pub fn ks_check_dup_params(sem: &KixSem, f: KixFunc)
+{
+    for (i in 0 .. f.params.length)
+    {
+        for (j in (i + 1) .. f.params.length)
+        {
+            if (f.params[i].name == f.params[j].name)
+            {
+                ks_error(sem, "E6107", "duplicate parameter '" + f.params[i].name + "' in function '" + f.name + "'", 0, 0, f.params[i].name.length)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type reference validation.
+// ---------------------------------------------------------------------------
+
+pub fn ks_type_known(sem: &KixSem, ty: string, generics: [string]): i32
+{
+    if (ks_ty_is_unknown(ty) == 1 or ks_ty_is_error(ty) == 1 or ks_ty_is_never(ty) == 1) { return 1 }
+    if (ks_ty_is_numeric(ty) == 1 or ks_ty_is_bool(ty) == 1 or ks_ty_is_char(ty) == 1 or ks_ty_is_string(ty) == 1 or ks_ty_is_unit(ty) == 1) { return 1 }
+    if (ks_ty_is_ref(ty) == 1 or ks_ty_is_ptr(ty) == 1) { return ks_type_known(sem, ks_ty_pointee(ty), generics) }
+    if (ks_ty_is_array(ty) == 1) { return ks_type_known(sem, ks_ty_elem(ty), generics) }
+    if (ks_ty_is_tuple(ty) == 1)
+    {
+        let parts = ks_ty_tuple_elems(ty)
+        for (i in 0 .. parts.length)
+        {
+            if (ks_type_known(sem, ks_trim(parts[i]), generics) == 0) { return 0 }
+        }
+        return 1
+    }
+    if (ks_ty_is_fn(ty) == 1)
+    {
+        let parts = ks_ty_fn_params(ty)
+        for (i in 0 .. parts.length)
+        {
+            if (ks_type_known(sem, parts[i], generics) == 0) { return 0 }
+        }
+        return ks_type_known(sem, ks_ty_fn_ret(ty), generics)
+    }
+    let base = ks_ty_base(ty)
+    if (base == "Self") { return 1 }
+    if (ks_has_name(generics, base) == 1) { return 1 }
+    if (ks_find_type(sem, base) >= 0)
+    {
+        let args = ks_ty_args(ty)
+        for (i in 0 .. args.length)
+        {
+            if (ks_type_known(sem, ks_trim(args[i]), generics) == 0) { return 0 }
+        }
+        return 1
+    }
+    return 0
+}
+
+pub fn ks_check_type_refs(sem: &KixSem, ty: string, generics: [string], line: i32, col: i32)
+{
+    if (ks_ty_is_unknown(ty) == 1 or ks_ty_is_error(ty) == 1) { return }
+    if (ks_type_known(sem, ty, generics) == 1) { return }
+    ks_error(sem, "E6105", "unknown type '" + ty + "'", line, col, ty.length)
+}
+
+pub fn ks_check_func_signature(sem: &KixSem, f: KixFunc)
+{
+    for (i in 0 .. f.params.length)
+    {
+        if (f.params[i].is_self == 1) { continue }
+        ks_check_type_refs(sem, f.params[i].ty, f.generics, ks_line(sem, f.node_id), ks_col(sem, f.node_id))
+    }
+    ks_check_type_refs(sem, f.ret, f.generics, ks_line(sem, f.node_id), ks_col(sem, f.node_id))
+}
+
+// ---------------------------------------------------------------------------
+// Type requirements and unification.
+// ---------------------------------------------------------------------------
+
+pub fn ks_require(sem: &KixSem, expected: string, actual: string, line: i32, col: i32, length: i32, what: string): i32
+{
+    if (ks_ty_is_unknown(expected) == 1 or ks_ty_is_unknown(actual) == 1) { return 1 }
+    if (ks_ty_is_error(expected) == 1 or ks_ty_is_error(actual) == 1) { return 1 }
+    if (ks_ty_is_never(actual) == 1) { return 1 }
+    if (expected == actual) { return 1 }
+    if (ks_ty_contains_unknown(actual) == 1 or ks_ty_contains_unknown(expected) == 1) { return 1 }
+    if (ks_ty_is_numeric(expected) == 1 and ks_ty_is_numeric(actual) == 1)
+    {
+        ks_error(sem, "E6202", what + ": cannot implicitly convert '" + actual + "' to '" + expected + "'; use `as`", line, col, length)
+        return 0
+    }
+    ks_error(sem, "E6201", what + ": expected '" + expected + "', found '" + actual + "'", line, col, length)
+    return 0
+}
+
+pub fn ks_require_bool(sem: &KixSem, ty: string, line: i32, col: i32, what: string): i32
+{
+    if (ks_ty_is_unknown(ty) == 1 or ks_ty_is_error(ty) == 1 or ks_ty_is_never(ty) == 1) { return 1 }
+    if (ks_ty_is_bool(ty) == 1) { return 1 }
+    ks_error(sem, "E6204", what + " must be bool, found '" + ty + "'", line, col, 1)
+    return 0
+}
+
+pub fn ks_unify_branch(sem: &KixSem, a: string, b: string, line: i32, col: i32, length: i32, what: string): string
+{
+    if (ks_ty_is_unknown(a) == 1 or ks_ty_is_error(a) == 1) { return b }
+    if (ks_ty_is_unknown(b) == 1 or ks_ty_is_error(b) == 1) { return a }
+    if (a == b) { return a }
+    if (ks_ty_is_never(a) == 1) { return b }
+    if (ks_ty_is_never(b) == 1) { return a }
+    if (ks_ty_contains_unknown(a) == 1) { return b }
+    if (ks_ty_contains_unknown(b) == 1) { return a }
+    ks_error(sem, "E6205", what + ": branch type mismatch '" + a + "' vs '" + b + "'", line, col, length)
+    return "error"
+}
+
+// ---------------------------------------------------------------------------
+// Place classification and mutability.
+// ---------------------------------------------------------------------------
+
+pub fn ks_is_place(sem: &KixSem, id: i32): i32
+{
+    let tag = ks_kind(sem, id)
+    if (tag == "Path" or tag == "Field" or tag == "Index") { return 1 }
+    if (tag == "Unary" and ks_text(sem, id) == "*") { return 1 }
+    return 0
+}
+
+pub fn ks_place_mutable(sem: &KixSem, sc: &KixScope, id: i32): i32
+{
+    let tag = ks_kind(sem, id)
+    if (tag == "Path")
+    {
+        let idx = ks_scope_lookup(sc, ks_text(sem, id))
+        if (idx >= 0 and sc.muts[idx] == 1) { return 1 }
+        return 0
+    }
+    if (tag == "Field" or tag == "Index")
+    {
+        return ks_place_mutable(sem, sc, ks_child(sem, id, 0))
+    }
+    if (tag == "Unary" and ks_text(sem, id) == "*")
+    {
+        return 1
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// Pattern checking.
+// ---------------------------------------------------------------------------
+
+pub fn ks_literal_type(text: string): string
+{
+    if (text == "true" or text == "false") { return "bool" }
+    if (text.length > 0 and compiler_string_byte(text, 0) == '"') { return "string" }
+    if (text.length > 0 and compiler_string_byte(text, 0) == 39) { return "char" }
+    if (ks_contains(text, ".") == 1 or ks_contains(text, "e") == 1 or ks_contains(text, "E") == 1) { return "f64" }
+    return "i64"
+}
+
+pub fn ks_merge_names(dst: [string], src: [string]): [string]
+{
+    let mut out = dst
+    for (i in 0 .. src.length)
+    {
+        if (ks_has_name(out, src[i]) == 0) { out.push(src[i]) }
+    }
+    return out
+}
+
+pub type KixBindings = struct {
+    names: [string],
+    tys: [string]
+}
+
+pub fn ks_bindings_empty(): KixBindings => KixBindings{ names: [], tys: [] }
+
+pub fn ks_bind_add(b: KixBindings, name: string, ty: string): KixBindings
+{
+    if (name == "" or name == "_") { return b }
+    for (i in 0 .. b.names.length)
+    {
+        if (b.names[i] == name) { return b }
+    }
+    b.names.push(name)
+    b.tys.push(ty)
+    return b
+}
+
+pub fn ks_bind_merge(a: KixBindings, b: KixBindings): KixBindings
+{
+    let mut out = a
+    for (i in 0 .. b.names.length)
+    {
+        out = ks_bind_add(out, b.names[i], b.tys[i])
+    }
+    return out
+}
+
+pub fn ks_bindings(sem: &KixSem, subject: string, id: i32): KixBindings
+{
+    let mut out = ks_bindings_empty()
+    if (ks_ok_node(sem, id) == 0) { return out }
+    let tag = ks_kind(sem, id)
+    if (tag == "PathPattern")
+    {
+        let name = ks_text(sem, id)
+        if (name == "_" or name == "self") { return out }
+        if (ks_is_binding_name(sem, subject, name) == 1) { return ks_bind_add(out, name, subject) }
+        return out
+    }
+    if (tag == "VariantPattern")
+    {
+        let vh = ks_find_variant_any(sem, ks_text(sem, id))
+        if (vh.type_idx < 0) { return out }
+        let variant = sem.types[vh.type_idx].variants[vh.variant_idx]
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            let fty = if (i < variant.tuple_tys.length) { ks_generic_unknown(variant.tuple_tys[i], sem.types[vh.type_idx].generics) } else { "unknown" }
+            out = ks_bind_merge(out, ks_bindings(sem, fty, ks_child(sem, id, i)))
+        }
+        return out
+    }
+    if (tag == "RecordPattern")
+    {
+        let res = ks_resolve_record(sem, subject, ks_text(sem, id))
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            let fid = ks_child(sem, id, i)
+            let fty = if (res.found == 1) { ks_generic_unknown(res.fields[ks_field_in(res.fields, ks_text(sem, fid))].ty, res.generics) } else { "unknown" }
+            let fi = if (res.found == 1) { ks_field_in(res.fields, ks_text(sem, fid)) } else { -1 }
+            if (ks_nchild(sem, fid) > 0)
+            {
+                let st = if (fi >= 0) { ks_generic_unknown(res.fields[fi].ty, res.generics) } else { "unknown" }
+                out = ks_bind_merge(out, ks_bindings(sem, st, ks_child(sem, fid, 0)))
+            }
+        }
+        return out
+    }
+    if (tag == "TuplePattern")
+    {
+        let elems = ks_ty_tuple_elems(subject)
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            let st = if (i < elems.length) { ks_trim(elems[i]) } else { "unknown" }
+            out = ks_bind_merge(out, ks_bindings(sem, st, ks_child(sem, id, i)))
+        }
+        return out
+    }
+    if (tag == "SlicePattern")
+    {
+        let st = if (ks_ty_is_array(subject) == 1) { ks_ty_elem(subject) } else { "unknown" }
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            out = ks_bind_merge(out, ks_bindings(sem, st, ks_child(sem, id, i)))
+        }
+        return out
+    }
+    if (tag == "FieldPattern")
+    {
+        if (ks_nchild(sem, id) > 0) { out = ks_bind_merge(out, ks_bindings(sem, "unknown", ks_child(sem, id, 0))) }
+        return out
+    }
+    if (tag == "OrPattern")
+    {
+        for (i in 0 .. ks_nchild(sem, id)) { out = ks_bind_merge(out, ks_bindings(sem, subject, ks_child(sem, id, i))) }
+        return out
+    }
+    return out
+}
+
+pub fn ks_pattern_names(sem: &KixSem, subject: string, id: i32): [string]
+{
+    let mut out: [string] = []
+    if (ks_ok_node(sem, id) == 0) { return out }
+    let tag = ks_kind(sem, id)
+    if (tag == "OrPattern")
+    {
+        for (i in 0 .. ks_nchild(sem, id)) { out = ks_merge_names(out, ks_pattern_names(sem, subject, ks_child(sem, id, i))) }
+        return out
+    }
+    if (tag == "PathPattern")
+    {
+        let name = ks_text(sem, id)
+        if (name == "_" or name == "self") { return out }
+        if (ks_is_binding_name(sem, subject, name) == 1) { out.push(name) }
+        return out
+    }
+    if (tag == "VariantPattern" or tag == "RecordPattern" or tag == "TuplePattern" or tag == "SlicePattern")
+    {
+        for (i in 0 .. ks_nchild(sem, id)) { out = ks_merge_names(out, ks_pattern_names(sem, "unknown", ks_child(sem, id, i))) }
+        return out
+    }
+    if (tag == "FieldPattern")
+    {
+        if (ks_nchild(sem, id) > 0) { out = ks_merge_names(out, ks_pattern_names(sem, "unknown", ks_child(sem, id, 0))) }
+        return out
+    }
+    return out
+}
+
+pub fn ks_is_binding_name(sem: &KixSem, subject: string, name: string): i32
+{
+    if (name == "" or name == "_") { return 0 }
+    let base = ks_ty_base(subject)
+    let ti = ks_find_type(sem, base)
+    if (ti >= 0)
+    {
+        if (ks_find_variant_in(sem.types[ti], name) >= 0) { return 0 }
+    }
+    if (ks_name_upper(name) == 1) { return 0 }
+    return 1
+}
+
+pub fn ks_declare_pattern_names(sem: &KixSem, sc: &KixScope, subject: string, names: [string], line: i32, col: i32)
+{
+    for (i in 0 .. names.length)
+    {
+        ks_declare(sem, sc, names[i], subject, 0, line, col)
+    }
+}
+
+pub fn ks_check_pattern(sem: &KixSem, sc: &KixScope, ctx: KixCtx, subject: string, id: i32, declare: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 1 }
+    let tag = ks_kind(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    if (tag == "WildcardPattern") { return 1 }
+    if (tag == "LiteralPattern")
+    {
+        let lt = ks_literal_type(ks_text(sem, id))
+        ks_require(sem, subject, lt, line, col, 1, "match pattern")
+        return 1
+    }
+    if (tag == "RangePattern")
+    {
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            let lt = ks_literal_type(ks_text(sem, ks_child(sem, id, i)))
+            ks_require(sem, subject, lt, line, col, 1, "range pattern")
+        }
+        return 1
+    }
+    if (tag == "PathPattern")
+    {
+        let name = ks_text(sem, id)
+        if (name == "_") { return 1 }
+        let base = ks_ty_base(subject)
+        let ti = ks_find_type(sem, base)
+        let mut is_variant = 0
+        if (ti >= 0 and ks_find_variant_in(sem.types[ti], name) >= 0) { is_variant = 1 }
+        if (is_variant == 1) { return 1 }
+        if (ks_find_variant_any(sem, name).type_idx >= 0) { return 1 }
+        if (ks_name_upper(name) == 1)
+        {
+            ks_error(sem, "E6303", "unknown variant '" + name + "' in pattern", line, col, name.length)
+            return 0
+        }
+        if (declare == 1) { ks_declare(sem, sc, name, subject, 0, line, col) }
+        return 1
+    }
+    if (tag == "VariantPattern")
+    {
+        let name = ks_text(sem, id)
+        let vh = ks_find_variant_any(sem, name)
+        if (vh.type_idx < 0)
+        {
+            ks_error(sem, "E6303", "unknown variant '" + name + "' in pattern", line, col, name.length)
+            return 0
+        }
+        let variant = sem.types[vh.type_idx].variants[vh.variant_idx]
+        let nc = ks_nchild(sem, id)
+        if (nc != variant.tuple_tys.length)
+        {
+            ks_error(sem, "E6302", "variant '" + name + "' expects " + i32_to_str(variant.tuple_tys.length) + " field(s), got " + i32_to_str(nc), line, col, name.length)
+            return 0
+        }
+        for (i in 0 .. nc)
+        {
+            let fty = ks_generic_unknown(variant.tuple_tys[i], sem.types[vh.type_idx].generics)
+            ks_check_pattern(sem, sc, ctx, fty, ks_child(sem, id, i), declare)
+        }
+        return 1
+    }
+    if (tag == "RecordPattern")
+    {
+        let name = ks_text(sem, id)
+        let res = ks_resolve_record(sem, subject, name)
+        if (res.found == 0 and name != "")
+        {
+            ks_error(sem, "E6105", "unknown type '" + name + "' in pattern", line, col, name.length)
+            return 0
+        }
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            let fid = ks_child(sem, id, i)
+            let fname = ks_text(sem, fid)
+            let mut fty = "unknown"
+            if (res.found == 1)
+            {
+                let fi = ks_field_in(res.fields, fname)
+                if (fi < 0)
+                {
+                    ks_error(sem, "E6109", "unknown field '" + fname + "' on type '" + res.type_name + "'", ks_line(sem, fid), ks_col(sem, fid), fname.length)
+                }
+                else { fty = ks_generic_unknown(res.fields[fi].ty, res.generics) }
+            }
+            if (ks_nchild(sem, fid) > 0)
+            {
+                ks_check_pattern(sem, sc, ctx, fty, ks_child(sem, fid, 0), declare)
+            }
+        }
+        return 1
+    }
+    if (tag == "TuplePattern")
+    {
+        let elems = ks_ty_tuple_elems(subject)
+        let nc = ks_nchild(sem, id)
+        if (ks_ty_is_tuple(subject) == 0 and ks_ty_is_unknown(subject) == 0)
+        {
+            ks_error(sem, "E6302", "tuple pattern requires a tuple value, found '" + subject + "'", line, col, 1)
+            return 0
+        }
+        if (elems.length > 0 and nc != elems.length)
+        {
+            ks_error(sem, "E6302", "tuple pattern arity mismatch: expected " + i32_to_str(elems.length) + ", got " + i32_to_str(nc), line, col, 1)
+            return 0
+        }
+        for (i in 0 .. nc)
+        {
+            let et = if (i < elems.length) { ks_trim(elems[i]) } else { "unknown" }
+            ks_check_pattern(sem, sc, ctx, et, ks_child(sem, id, i), declare)
+        }
+        return 1
+    }
+    if (tag == "SlicePattern")
+    {
+        let et = if (ks_ty_is_array(subject) == 1) { ks_ty_elem(subject) } else { "unknown" }
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            ks_check_pattern(sem, sc, ctx, et, ks_child(sem, id, i), declare)
+        }
+        return 1
+    }
+    if (tag == "OrPattern")
+    {
+        let nc = ks_nchild(sem, id)
+        let mut first: [string] = []
+        let b0 = if (nc > 0) { ks_bindings(sem, subject, ks_child(sem, id, 0)) } else { ks_bindings_empty() }
+        first = b0.names
+        for (i in 0 .. nc)
+        {
+            let bi = ks_bindings(sem, subject, ks_child(sem, id, i))
+            if (ks_names_equal(first, bi.names) == 0)
+            {
+                ks_error(sem, "E6305", "or-pattern alternatives must bind the same names", line, col, 1)
+            }
+            ks_check_pattern(sem, sc, ctx, subject, ks_child(sem, id, i), 0)
+        }
+        for (i in 0 .. first.length)
+        {
+            for (j in (i + 1) .. first.length)
+            {
+                if (first[i] == first[j]) { ks_error(sem, "E6301", "duplicate binding '" + first[i] + "' in pattern", line, col, first[i].length) }
+            }
+        }
+        if (declare == 1)
+        {
+            for (i in 0 .. b0.names.length)
+            {
+                ks_declare(sem, sc, b0.names[i], b0.tys[i], 0, line, col)
+            }
+        }
+        return 1
+    }
+    return 1
+}
+
+// ---------------------------------------------------------------------------
+// Expression checking.
+// ---------------------------------------------------------------------------
+
+pub fn ks_builtin(name: string): i32
+{
+    return match name {
+        "print" | "panic" | "len" | "clone" | "assert" -> 1
+        _ -> 0
+    }
+}
+
+pub fn ks_check_expr(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "unknown" }
+    let tag = ks_kind(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    if (tag == "IntLiteral") { return "i64" }
+    if (tag == "FloatLiteral") { return "f64" }
+    if (tag == "BoolLiteral") { return "bool" }
+    if (tag == "CharLiteral") { return "char" }
+    if (tag == "StringLiteral" or tag == "RawStringLiteral") { return "string" }
+    if (tag == "ByteStringLiteral") { return "[u8]" }
+    if (tag == "UnitLiteral") { return "()" }
+    if (tag == "Path") { return ks_check_path(sem, sc, ctx, id) }
+    if (tag == "Call") { return ks_check_call(sem, sc, ctx, id) }
+    if (tag == "Field") { return ks_check_field(sem, sc, ctx, id) }
+    if (tag == "Index") { return ks_check_index(sem, sc, ctx, id) }
+    if (tag == "Slice") { return ks_check_slice(sem, sc, ctx, id) }
+    if (tag == "Propagate") { return ks_check_propagate(sem, sc, ctx, id) }
+    if (tag == "Coalesce") { return ks_check_coalesce(sem, sc, ctx, id) }
+    if (tag == "Pipe") { return ks_check_pipe(sem, sc, ctx, id) }
+    if (tag == "Binary") { return ks_check_binary(sem, sc, ctx, id) }
+    if (tag == "Assign") { return ks_check_assign(sem, sc, ctx, id) }
+    if (tag == "Range") { return ks_check_range(sem, sc, ctx, id) }
+    if (tag == "Cast") { return ks_check_cast(sem, sc, ctx, id) }
+    if (tag == "Unary") { return ks_check_unary(sem, sc, ctx, id) }
+    if (tag == "Borrow") { return ks_check_borrow(sem, sc, ctx, id) }
+    if (tag == "If") { return ks_check_if(sem, sc, ctx, id) }
+    if (tag == "Match") { return ks_check_match(sem, sc, ctx, id) }
+    if (tag == "Closure") { return ks_check_closure(sem, sc, ctx, id) }
+    if (tag == "ArrayLiteral") { return ks_check_array(sem, sc, ctx, id) }
+    if (tag == "TupleLiteral") { return ks_check_tuple(sem, sc, ctx, id) }
+    if (tag == "RecordLiteral") { return ks_check_record_literal(sem, sc, ctx, id) }
+    if (tag == "GenericApply") { return ks_check_generic_apply(sem, sc, ctx, id) }
+    if (tag == "Block") { return ks_check_block(sem, sc, ctx, id) }
+    if (tag == "While" or tag == "For" or tag == "Let" or tag == "Return" or tag == "Break" or tag == "Continue" or tag == "ExprStmt")
+    {
+        return ks_check_stmt(sem, sc, ctx, id)
+    }
+    return "unknown"
+}
+
+pub fn ks_check_path(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let name = ks_text(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let idx = ks_scope_lookup(sc, name)
+    if (idx >= 0) { return sc.tys[idx] }
+    if (ks_builtin(name) == 1) { return "builtin:" + name }
+    if (ks_find_func(sem, name) >= 0) { return "fn" }
+    let vh = ks_find_variant_any(sem, name)
+    if (vh.type_idx >= 0) { return ks_variant_owner_type(sem, vh.type_idx) }
+    if (ks_contains(name, "::") == 1)
+    {
+        let parts = ks_split_top(name, ':')
+        if (parts.length >= 1)
+        {
+            let last = ks_trim(parts[parts.length - 1])
+            if (ks_find_method_any(sem, last) >= 0) { return "fn" }
+            let vh2 = ks_find_variant_any(sem, last)
+            if (vh2.type_idx >= 0) { return ks_variant_owner_type(sem, vh2.type_idx) }
+        }
+    }
+    ks_error(sem, "E6101", "undefined symbol '" + name + "'", line, col, name.length)
+    return "error"
+}
+
+pub fn ks_variant_owner_type(sem: &KixSem, type_idx: i32): string
+{
+    if (type_idx < 0 or type_idx >= sem.types.length) { return "unknown" }
+    let ti = sem.types[type_idx]
+    if (ti.generics.length == 0) { return ti.name }
+    let mut out = ti.name + "["
+    for (i in 0 .. ti.generics.length)
+    {
+        if (i > 0) { out = out + ", " }
+        out = out + "unknown"
+    }
+    return out + "]"
+}
+
+pub fn ks_callee_owner_name(sem: &KixSem, id: i32): string
+{
+    if (ks_kind(sem, id) == "Path") { return ks_ty_base(ks_parse_type(ks_text(sem, id))) }
+    return ""
+}
+
+pub fn ks_check_call(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let callee = ks_child(sem, id, 0)
+    if (callee < 0) { return "unknown" }
+    let mut args: [i32] = []
+    for (i in 1 .. ks_nchild(sem, id)) { args.push(ks_child(sem, id, i)) }
+
+    // Method call: receiver.method(...)
+    if (ks_kind(sem, callee) == "Field")
+    {
+        return ks_check_method_call(sem, sc, ctx, callee, args, line, col)
+    }
+    // print/panic/len/clone builtins.
+    if (ks_kind(sem, callee) == "Path" and ks_builtin(ks_text(sem, callee)) == 1)
+    {
+        return ks_check_builtin_call(sem, sc, ctx, callee, args)
+    }
+    // Variant constructor: Some(x), Ok(x), ...
+    if (ks_kind(sem, callee) == "Path")
+    {
+        let name = ks_text(sem, callee)
+        let short = if (ks_contains(name, "::") == 1) { ks_trim(ks_split_top(name, ':')[ks_split_top(name, ':').length - 1]) } else { name }
+        let vh = ks_find_variant_any(sem, short)
+        if (vh.type_idx >= 0)
+        {
+            let variant = sem.types[vh.type_idx].variants[vh.variant_idx]
+            if (args.length != variant.tuple_tys.length)
+            {
+                ks_error(sem, "E6210", "variant '" + short + "' expects " + i32_to_str(variant.tuple_tys.length) + " argument(s), got " + i32_to_str(args.length), line, col, short.length)
+            }
+            else
+            {
+                for (i in 0 .. args.length)
+                {
+                    let at = ks_check_expr(sem, sc, ctx, args[i])
+                    if (ks_uses_generic(variant.tuple_tys[i], sem.types[vh.type_idx].generics) == 1) { continue }
+                    ks_require(sem, variant.tuple_tys[i], at, ks_line(sem, args[i]), ks_col(sem, args[i]), 1, "variant '" + short + "' argument")
+                }
+            }
+            return ks_variant_owner_type(sem, vh.type_idx)
+        }
+    }
+    // Function or associated function.
+    let mut type_args: [string] = []
+    let mut base = callee
+    if (ks_kind(sem, callee) == "GenericApply")
+    {
+        base = ks_child(sem, callee, 0)
+        for (i in 0 .. ks_ntype(sem, callee)) { type_args.push(ks_parse_type(ks_type_of(sem, callee, i))) }
+    }
+    if (ks_kind(sem, base) == "Path")
+    {
+        let name = ks_text(sem, base)
+        let mut fi = -1
+        if (ks_contains(name, "::") == 1)
+        {
+            let parts = ks_split_top(name, ':')
+            let last = ks_trim(parts[parts.length - 1])
+            let owner = ks_ty_base(ks_parse_type(ks_trim(parts[0])))
+            fi = ks_find_method(sem, owner, last)
+            if (fi < 0) { fi = ks_find_method_any(sem, last) }
+        }
+        else { fi = ks_find_func(sem, name) }
+        if (fi >= 0) { return ks_check_call_func(sem, sc, ctx, sem.funcs[fi], args, type_args, "unknown", line, col) }
+    }
+    // Calling a local of function type.
+    if (ks_kind(sem, base) == "Path")
+    {
+        let idx = ks_scope_lookup(sc, ks_text(sem, base))
+        if (idx >= 0 and ks_ty_is_fn(sc.tys[idx]) == 1)
+        {
+            let params = ks_ty_fn_params(sc.tys[idx])
+            if (params.length != args.length)
+            {
+                ks_error(sem, "E6210", "function value expects " + i32_to_str(params.length) + " argument(s), got " + i32_to_str(args.length), line, col, 1)
+            }
+            else
+            {
+                for (i in 0 .. args.length)
+                {
+                    let at = ks_check_expr(sem, sc, ctx, args[i])
+                    ks_require(sem, params[i], at, ks_line(sem, args[i]), ks_col(sem, args[i]), 1, "call argument")
+                }
+            }
+            return ks_ty_fn_ret(sc.tys[idx])
+        }
+    }
+    ks_check_expr(sem, sc, ctx, callee)
+    if (ks_kind(sem, base) == "Path" and ks_scope_lookup(sc, ks_text(sem, base)) < 0)
+    {
+        ks_error(sem, "E6103", "undefined function '" + ks_text(sem, base) + "'", line, col, ks_text(sem, base).length)
+    }
+    for (i in 0 .. args.length) { ks_check_expr(sem, sc, ctx, args[i]) }
+    return "unknown"
+}
+
+pub fn ks_check_builtin_call(sem: &KixSem, sc: &KixScope, ctx: KixCtx, callee: i32, args: [i32]): string
+{
+    let name = ks_text(sem, callee)
+    let mut tys: [string] = []
+    for (i in 0 .. args.length) { tys.push(ks_check_expr(sem, sc, ctx, args[i])) }
+    if (name == "len")
+    {
+        if (args.length != 1) { ks_error(sem, "E6210", "'len' expects 1 argument, got " + i32_to_str(args.length), ks_line(sem, callee), ks_col(sem, callee), 1) }
+        return "i64"
+    }
+    if (name == "clone")
+    {
+        if (args.length >= 1) { return tys[0] }
+        return "unknown"
+    }
+    if (name == "panic") { return "!" }
+    return "()"
+}
+
+pub fn ks_check_method_call(sem: &KixSem, sc: &KixScope, ctx: KixCtx, callee: i32, args: [i32], line: i32, col: i32): string
+{
+    let method = ks_text(sem, callee)
+    let recv = ks_child(sem, callee, 0)
+    let rt = ks_check_expr(sem, sc, ctx, recv)
+    let base = ks_ty_base(rt)
+    let mut fi = ks_find_method(sem, base, method)
+    if (fi < 0) { fi = ks_find_method_any(sem, method) }
+    if (fi < 0)
+    {
+        ks_error(sem, "E6103", "undefined method '" + method + "' on type '" + rt + "'", line, col, method.length)
+        for (i in 0 .. args.length) { ks_check_expr(sem, sc, ctx, args[i]) }
+        return "unknown"
+    }
+    return ks_check_call_func(sem, sc, ctx, sem.funcs[fi], args, [], rt, line, col)
+}
+
+pub fn ks_check_call_func(sem: &KixSem, sc: &KixScope, ctx: KixCtx, f: KixFunc, args: [i32], type_args: [string], recv_ty: string, line: i32, col: i32): string
+{
+    let mut params = f.params
+    if (params.length > 0 and params[0].is_self == 1)
+    {
+        let mut rest: [KixParam] = []
+        for (i in 1 .. params.length) { rest.push(params[i]) }
+        params = rest
+    }
+    if (params.length != args.length)
+    {
+        ks_error(sem, "E6210", "'" + f.name + "' expects " + i32_to_str(params.length) + " argument(s), got " + i32_to_str(args.length), line, col, f.name.length)
+    }
+    for (i in 0 .. args.length)
+    {
+        let at = ks_check_expr(sem, sc, ctx, args[i])
+        if (i < params.length)
+        {
+            let pt = params[i].ty
+            if (ks_uses_generic(pt, f.generics) == 1) { continue }
+            ks_require(sem, pt, at, ks_line(sem, args[i]), ks_col(sem, args[i]), 1, "argument " + i32_to_str(i + 1) + " of '" + f.name + "'")
+        }
+    }
+    if (type_args.length > 0 and type_args.length != f.generics.length)
+    {
+        ks_error(sem, "E6210", "generic function '" + f.name + "' expects " + i32_to_str(f.generics.length) + " type argument(s), got " + i32_to_str(type_args.length), line, col, f.name.length)
+    }
+    let mut ret = f.ret
+    if (type_args.length > 0) { ret = ks_apply_generics(ret, f.generics, type_args) }
+    if (recv_ty != "unknown" and recv_ty != "") { ret = ks_replace_ident(ret, "Self", recv_ty) }
+    return ret
+}
+
+pub fn ks_check_field(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let name = ks_text(sem, id)
+    let recv = ks_child(sem, id, 0)
+    let rt = ks_check_expr(sem, sc, ctx, recv)
+    let base = ks_ty_base(rt)
+    if (name == "length" and (ks_ty_is_array(rt) == 1 or ks_ty_is_string(rt) == 1)) { return "i64" }
+    let ti = ks_find_type(sem, base)
+    if (ti >= 0)
+    {
+        let fi = ks_find_field(sem.types[ti], name)
+        if (fi >= 0) { return sem.types[ti].fields[fi].ty }
+    }
+    // Allow tuple element access .0 .1
+    if (ks_ty_is_tuple(rt) == 1)
+    {
+        let parts = ks_ty_tuple_elems(rt)
+        let mut numeric = 1
+        for (i in 0 .. name.length)
+        {
+            let c = compiler_string_byte(name, i)
+            if (c < 48 or c > 57) { numeric = 0 }
+        }
+        if (numeric == 1 and name.length > 0)
+        {
+            let index = ks_atoi(name)
+            if (index >= 0 and index < parts.length) { return ks_trim(parts[index]) }
+        }
+    }
+    ks_error(sem, "E6208", "unknown field '" + name + "' on type '" + rt + "'", ks_line(sem, id), ks_col(sem, id), name.length)
+    return "unknown"
+}
+
+pub fn ks_atoi(text: string): i32
+{
+    let mut n = 0
+    for (i in 0 .. text.length)
+    {
+        let c = compiler_string_byte(text, i)
+        if (c >= 48 and c <= 57) { n = n * 10 + (c - 48) }
+    }
+    return n
+}
+
+pub fn ks_check_index(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let recv = ks_child(sem, id, 0)
+    let index = ks_child(sem, id, 1)
+    let rt = ks_check_expr(sem, sc, ctx, recv)
+    let it = ks_check_expr(sem, sc, ctx, index)
+    if (ks_ty_is_unknown(it) == 0 and ks_ty_is_error(it) == 0 and ks_ty_is_int(it) == 0)
+    {
+        ks_error(sem, "E6206", "index must be an integer, found '" + it + "'", line, col, 1)
+    }
+    if (ks_ty_is_array(rt) == 1) { return ks_ty_elem(rt) }
+    if (ks_ty_is_string(rt) == 1) { return "char" }
+    if (ks_ty_is_unknown(rt) == 1 or ks_ty_is_error(rt) == 1) { return "unknown" }
+    ks_error(sem, "E6207", "cannot index value of type '" + rt + "'", line, col, 1)
+    return "unknown"
+}
+
+pub fn ks_check_slice(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let recv = ks_child(sem, id, 0)
+    let rt = ks_check_expr(sem, sc, ctx, recv)
+    for (i in 1 .. ks_nchild(sem, id))
+    {
+        let b = ks_child(sem, id, i)
+        if (b >= 0)
+        {
+            let bt = ks_check_expr(sem, sc, ctx, b)
+            if (ks_ty_is_unknown(bt) == 0 and ks_ty_is_error(bt) == 0 and ks_ty_is_int(bt) == 0)
+            {
+                ks_error(sem, "E6206", "slice bound must be an integer, found '" + bt + "'", line, col, 1)
+            }
+        }
+    }
+    if (ks_ty_is_array(rt) == 1) { return rt }
+    if (ks_ty_is_unknown(rt) == 1 or ks_ty_is_error(rt) == 1) { return "unknown" }
+    ks_error(sem, "E6207", "cannot slice value of type '" + rt + "'", line, col, 1)
+    return "unknown"
+}
+
+pub fn ks_check_propagate(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let operand = ks_child(sem, id, 0)
+    let ot = ks_check_expr(sem, sc, ctx, operand)
+    if (ks_ty_is_option(ot) == 1)
+    {
+        if (ks_ty_is_option(ctx.ret) == 0 and ks_ty_is_unknown(ctx.ret) == 0)
+        {
+            ks_error(sem, "E6502", "`?` requires the enclosing function to return Option, found '" + ctx.ret + "'", line, col, 1)
+        }
+        return ks_ty_option_inner(ot)
+    }
+    if (ks_ty_is_result(ot) == 1)
+    {
+        if (ks_ty_is_result(ctx.ret) == 0 and ks_ty_is_unknown(ctx.ret) == 0)
+        {
+            ks_error(sem, "E6502", "`?` requires the enclosing function to return Result, found '" + ctx.ret + "'", line, col, 1)
+        }
+        return ks_ty_result_ok(ot)
+    }
+    if (ks_ty_is_unknown(ot) == 1 or ks_ty_is_error(ot) == 1) { return "unknown" }
+    ks_error(sem, "E6501", "`?` expects Option or Result, found '" + ot + "'", line, col, 1)
+    return "unknown"
+}
+
+pub fn ks_check_coalesce(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let left = ks_child(sem, id, 0)
+    let right = ks_child(sem, id, 1)
+    let lt = ks_check_expr(sem, sc, ctx, left)
+    let rt = ks_check_expr(sem, sc, ctx, right)
+    if (ks_ty_is_option(lt) == 1)
+    {
+        let inner = ks_ty_option_inner(lt)
+        return ks_unify_branch(sem, inner, rt, line, col, 1, "`??` operands")
+    }
+    if (ks_ty_is_unknown(lt) == 1 or ks_ty_is_error(lt) == 1) { return rt }
+    ks_error(sem, "E6503", "`??` expects an Option on the left, found '" + lt + "'", line, col, 1)
+    return rt
+}
+
+pub fn ks_check_pipe(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let left = ks_child(sem, id, 0)
+    let right = ks_child(sem, id, 1)
+    let lt = ks_check_expr(sem, sc, ctx, left)
+    // `value |> f` and `value |> f?`
+    let mut target = right
+    let mut propagate = 0
+    if (ks_kind(sem, right) == "Propagate")
+    {
+        propagate = 1
+        target = ks_child(sem, right, 0)
+    }
+    if (ks_kind(sem, target) == "Path")
+    {
+        let name = ks_text(sem, target)
+        let fi = ks_find_func(sem, name)
+        if (fi >= 0)
+        {
+            let f = sem.funcs[fi]
+            if (f.params.length != 1)
+            {
+                ks_error(sem, "E6210", "piped function '" + name + "' expects 1 argument, got " + i32_to_str(f.params.length), line, col, name.length)
+            }
+            else { ks_require(sem, f.params[0].ty, lt, line, col, 1, "piped argument of '" + name + "'") }
+            let mut ret = f.ret
+            if (propagate == 1)
+            {
+                if (ks_ty_is_option(ret) == 1) { ret = ks_ty_option_inner(ret) }
+                elif (ks_ty_is_result(ret) == 1) { ret = ks_ty_result_ok(ret) }
+                else { ks_error(sem, "E6501", "`?` expects Option or Result, found '" + ret + "'", line, col, 1) }
+            }
+            return ret
+        }
+    }
+    ks_check_expr(sem, sc, ctx, right)
+    ks_error(sem, "E6209", "`|>` requires a function on the right-hand side", line, col, 1)
+    return "unknown"
+}
+
+pub fn ks_check_binary(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let op = ks_text(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let lt = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 0))
+    let rt = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 1))
+    if (ks_ty_is_error(lt) == 1 or ks_ty_is_error(rt) == 1) { return "error" }
+    if (op == "&&" or op == "||")
+    {
+        ks_require(sem, "bool", lt, line, col, 1, "operator '" + op + "'")
+        ks_require(sem, "bool", rt, line, col, 1, "operator '" + op + "'")
+        return "bool"
+    }
+    if (op == "==" or op == "!=")
+    {
+        ks_unify_branch(sem, lt, rt, line, col, 1, "operator '" + op + "'")
+        return "bool"
+    }
+    if (op == "<" or op == "<=" or op == ">" or op == ">=")
+    {
+        if (ks_ty_is_unknown(lt) == 0 and ks_ty_is_unknown(rt) == 0)
+        {
+            if (ks_ty_is_numeric(lt) == 1 and ks_ty_is_numeric(rt) == 1)
+            {
+                if (lt != rt) { ks_error(sem, "E6202", "operator '" + op + "' cannot mix '" + lt + "' and '" + rt + "'; use `as`", line, col, 1) }
+            }
+            elif (lt != rt) { ks_error(sem, "E6209", "operator '" + op + "' cannot compare '" + lt + "' and '" + rt + "'", line, col, 1) }
+        }
+        return "bool"
+    }
+    if (op == "+" and ks_ty_is_string(lt) == 1 and ks_ty_is_string(rt) == 1) { return "string" }
+    if (op == "&" or op == "|" or op == "^" or op == "<<" or op == ">>")
+    {
+        ks_require(sem, lt, rt, line, col, 1, "operator '" + op + "' operands")
+        return lt
+    }
+    // arithmetic
+    if (ks_ty_is_unknown(lt) == 1) { return rt }
+    if (ks_ty_is_unknown(rt) == 1) { return lt }
+    if (ks_ty_is_numeric(lt) == 1 and ks_ty_is_numeric(rt) == 1)
+    {
+        if (lt != rt)
+        {
+            ks_error(sem, "E6202", "operator '" + op + "' cannot mix '" + lt + "' and '" + rt + "'; use `as`", line, col, 1)
+            return "error"
+        }
+        return lt
+    }
+    ks_error(sem, "E6209", "operator '" + op + "' cannot be applied to '" + lt + "' and '" + rt + "'", line, col, 1)
+    return "error"
+}
+
+pub fn ks_check_assign(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let op = ks_text(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let lhs = ks_child(sem, id, 0)
+    let rhs = ks_child(sem, id, 1)
+    let lt = ks_check_expr(sem, sc, ctx, lhs)
+    let rt = ks_check_expr(sem, sc, ctx, rhs)
+    if (ks_is_place(sem, lhs) == 0)
+    {
+        ks_error(sem, "E6601", "assignment target must be a place expression", line, col, 1)
+        return "()"
+    }
+    if (ks_place_mutable(sem, sc, lhs) == 0 and ks_kind(sem, lhs) == "Path")
+    {
+        ks_error(sem, "E6601", "cannot assign to immutable binding '" + ks_text(sem, lhs) + "'", line, col, 1)
+    }
+    if (op == "=")
+    {
+        ks_require(sem, lt, rt, line, col, 1, "assignment")
+    }
+    else
+    {
+        if (ks_ty_is_numeric(lt) == 1 and ks_ty_is_numeric(rt) == 1 and lt != rt)
+        {
+            ks_error(sem, "E6202", "compound assignment cannot mix '" + lt + "' and '" + rt + "'; use `as`", line, col, 1)
+        }
+        elif (ks_ty_is_numeric(lt) == 0 or ks_ty_is_numeric(rt) == 0)
+        {
+            ks_error(sem, "E6209", "compound assignment '" + op + "' requires numeric operands", line, col, 1)
+        }
+    }
+    return "()"
+}
+
+pub fn ks_check_range(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let lt = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 0))
+    let rt = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 1))
+    ks_require(sem, lt, rt, ks_line(sem, id), ks_col(sem, id), 1, "range bounds")
+    return "range:" + lt
+}
+
+pub fn ks_check_cast(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let operand = ks_child(sem, id, 0)
+    let type_node = ks_child(sem, id, 1)
+    let ot = ks_check_expr(sem, sc, ctx, operand)
+    let target = ks_parse_type(ks_text(sem, type_node))
+    if (ks_ty_is_unknown(target) == 1)
+    {
+        ks_error(sem, "E6203", "invalid cast target '" + ks_text(sem, type_node) + "'", line, col, 1)
+        return "unknown"
+    }
+    if (ks_ty_is_unknown(ot) == 1 or ks_ty_is_error(ot) == 1) { return target }
+    let ok = 0
+    if (ks_ty_is_numeric(ot) == 1 and ks_ty_is_numeric(target) == 1) { ok = 1 }
+    elif (ks_ty_is_char(ot) == 1 and ks_ty_is_int(target) == 1) { ok = 1 }
+    elif (ks_ty_is_int(ot) == 1 and ks_ty_is_char(target) == 1) { ok = 1 }
+    if (ok == 0)
+    {
+        ks_error(sem, "E6203", "cannot cast '" + ot + "' to '" + target + "'", line, col, 1)
+    }
+    return target
+}
+
+pub fn ks_check_unary(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let op = ks_text(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let ot = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 0))
+    if (op == "*")
+    {
+        if (ks_ty_is_ref(ot) == 1 or ks_ty_is_ptr(ot) == 1) { return ks_ty_pointee(ot) }
+        if (ks_ty_is_unknown(ot) == 1 or ks_ty_is_error(ot) == 1) { return "unknown" }
+        ks_error(sem, "E6209", "cannot dereference non-pointer type '" + ot + "'", line, col, 1)
+        return "unknown"
+    }
+    if (op == "!")
+    {
+        ks_require(sem, "bool", ot, line, col, 1, "operator '!'")
+        return "bool"
+    }
+    if (op == "-")
+    {
+        if (ks_ty_is_numeric(ot) == 1 or ks_ty_is_unknown(ot) == 1) { return ot }
+        ks_error(sem, "E6209", "unary '-' requires a numeric operand, found '" + ot + "'", line, col, 1)
+        return "unknown"
+    }
+    return ot
+}
+
+pub fn ks_check_borrow(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let op = ks_text(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let operand = ks_child(sem, id, 0)
+    let ot = ks_check_expr(sem, sc, ctx, operand)
+    if (ks_is_place(sem, operand) == 0)
+    {
+        ks_error(sem, "E6401", "cannot borrow a temporary; `&` requires a path, field, index, or dereference place", line, col, 1)
+        return "&" + ot
+    }
+    if (op == "&mut")
+    {
+        if (ks_place_mutable(sem, sc, operand) == 0)
+        {
+            ks_error(sem, "E6402", "cannot take a mutable borrow of an immutable place", line, col, 1)
+        }
+        return "&mut " + ot
+    }
+    return "&" + ot
+}
+
+pub fn ks_check_if(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let cond = ks_child(sem, id, 0)
+    let then_id = ks_child(sem, id, 1)
+    let ct = ks_check_expr(sem, sc, ctx, cond)
+    ks_require_bool(sem, ct, ks_line(sem, cond), ks_col(sem, cond), "if condition")
+    let then_ty = ks_check_expr(sem, sc, ctx, then_id)
+    if (ks_nchild(sem, id) >= 3)
+    {
+        let else_ty = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 2))
+        return ks_unify_branch(sem, then_ty, else_ty, line, col, 1, "if/else branches")
+    }
+    return "()"
+}
+
+pub fn ks_check_match(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let subject = ks_child(sem, id, 0)
+    let st = ks_check_expr(sem, sc, ctx, subject)
+    let mut result = "unknown"
+    let mut first = 1
+    let mut arms: [i32] = []
+    for (i in 1 .. ks_nchild(sem, id))
+    {
+        let arm = ks_child(sem, id, i)
+        if (ks_kind(sem, arm) != "MatchArm") { continue }
+        arms.push(arm)
+        let pattern = ks_child(sem, arm, 0)
+        ks_scope_push(sc)
+        ks_check_pattern(sem, sc, ctx, st, pattern, 1)
+        let mut body_index = 1
+        if (ks_nchild(sem, arm) >= 3)
+        {
+            // optional guard
+            let guard = ks_child(sem, arm, 1)
+            let gt = ks_check_expr(sem, sc, ctx, guard)
+            ks_require_bool(sem, gt, ks_line(sem, guard), ks_col(sem, guard), "match guard")
+            body_index = 2
+        }
+        let body = ks_child(sem, arm, body_index)
+        let bt = ks_check_expr(sem, sc, ctx, body)
+        ks_scope_pop(sc)
+        if (first == 1) { result = bt; first = 0 }
+        else { result = ks_unify_branch(sem, result, bt, ks_line(sem, arm), ks_col(sem, arm), 1, "match arms") }
+    }
+    ks_match_exhaustive(sem, st, arms, line, col)
+    return result
+}
+
+pub fn ks_pattern_catchall(sem: &KixSem, subject: string, id: i32): i32
+{
+    if (ks_ok_node(sem, id) == 0) { return 0 }
+    let tag = ks_kind(sem, id)
+    if (tag == "WildcardPattern") { return 1 }
+    if (tag == "PathPattern")
+    {
+        let name = ks_text(sem, id)
+        if (ks_is_binding_name(sem, subject, name) == 1) { return 1 }
+        return 0
+    }
+    if (tag == "OrPattern")
+    {
+        for (i in 0 .. ks_nchild(sem, id))
+        {
+            if (ks_pattern_catchall(sem, subject, ks_child(sem, id, i)) == 1) { return 1 }
+        }
+    }
+    return 0
+}
+
+pub fn ks_collect_covered(sem: &KixSem, subject: string, id: i32): [string]
+{
+    let mut out: [string] = []
+    if (ks_ok_node(sem, id) == 0) { return out }
+    let tag = ks_kind(sem, id)
+    if (tag == "OrPattern")
+    {
+        for (i in 0 .. ks_nchild(sem, id)) { out = ks_merge_names(out, ks_collect_covered(sem, subject, ks_child(sem, id, i))) }
+        return out
+    }
+    let name = ks_text(sem, id)
+    if (tag == "PathPattern" or tag == "VariantPattern" or tag == "RecordPattern")
+    {
+        let base = ks_ty_base(subject)
+        let ti = ks_find_type(sem, base)
+        if (ti >= 0 and ks_find_variant_in(sem.types[ti], name) >= 0)
+        {
+            out.push(name)
+        }
+    }
+    return out
+}
+
+pub fn ks_match_exhaustive(sem: &KixSem, subject: string, arms: [i32], line: i32, col: i32)
+{
+    let base = ks_ty_base(subject)
+    let ti = ks_find_type(sem, base)
+    if (ti < 0) { return }
+    let variants = sem.types[ti].variants
+    if (variants.length == 0) { return }
+    let mut covered: [string] = []
+    for (i in 0 .. arms.length)
+    {
+        let pattern = ks_child(sem, arms[i], 0)
+        if (ks_pattern_catchall(sem, subject, pattern) == 1) { return }
+        covered = ks_merge_names(covered, ks_collect_covered(sem, subject, pattern))
+    }
+    let mut missing = ""
+    for (v in 0 .. variants.length)
+    {
+        if (ks_has_name(covered, variants[v].name) == 0)
+        {
+            if (missing != "") { missing = missing + ", " }
+            missing = missing + variants[v].name
+        }
+    }
+    if (missing != "")
+    {
+        ks_error(sem, "E6304", "non-exhaustive match for '" + sem.types[ti].name + "': missing " + missing, line, col, 1)
+    }
+}
+
+pub fn ks_check_closure(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let ret = ks_parse_type(ks_aux(sem, id))
+    let body = ks_child(sem, id, 0)
+    let inner = KixCtx{ ret: ret, generics: ctx.generics, loop_depth: 0, is_closure: 1 }
+    ks_scope_push(sc)
+    let mut params: [string] = []
+    for (i in 0 .. ks_nname(sem, id))
+    {
+        let name = ks_name(sem, id, i)
+        if (name.length > 1 and compiler_string_byte(name, 0) == '[') { continue }
+        let raw_ty = if (i < ks_ntype(sem, id)) { ks_type_of(sem, id, i) } else { "" }
+        let ty = ks_parse_type(raw_ty)
+        ks_declare(sem, sc, name, ty, 0, line, col)
+        params.push(ty)
+    }
+    let bt = if (ks_kind(sem, body) == "Block") { ks_check_block(sem, sc, inner, body) } else { ks_check_expr(sem, sc, inner, body) }
+    ks_scope_pop(sc)
+    ks_require(sem, ret, bt, line, col, 1, "closure body")
+    let mut out = "fn("
+    for (i in 0 .. params.length)
+    {
+        if (i > 0) { out = out + ", " }
+        out = out + params[i]
+    }
+    return out + ") -> " + ret
+}
+
+pub fn ks_check_array(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let mut elem = "unknown"
+    for (i in 0 .. ks_nchild(sem, id))
+    {
+        let et = ks_check_expr(sem, sc, ctx, ks_child(sem, id, i))
+        if (i == 0) { elem = et }
+        else { elem = ks_unify_branch(sem, elem, et, ks_line(sem, id), ks_col(sem, id), 1, "array elements") }
+    }
+    return "[" + elem + "]"
+}
+
+pub fn ks_check_tuple(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let mut out = "("
+    for (i in 0 .. ks_nchild(sem, id))
+    {
+        if (i > 0) { out = out + ", " }
+        out = out + ks_check_expr(sem, sc, ctx, ks_child(sem, id, i))
+    }
+    return out + ")"
+}
+
+pub fn ks_record_name(sem: &KixSem, id: i32): string
+{
+    let text = ks_text(sem, id)
+    if (text != "") { return ks_ty_base(ks_parse_type(text)) }
+    let first = ks_child(sem, id, 0)
+    if (ks_kind(sem, first) == "Path") { return ks_ty_base(ks_parse_type(ks_text(sem, first))) }
+    if (ks_kind(sem, first) == "GenericApply")
+    {
+        let b = ks_child(sem, first, 0)
+        if (ks_kind(sem, b) == "Path") { return ks_ty_base(ks_parse_type(ks_text(sem, b))) }
+    }
+    return ""
+}
+
+pub fn ks_check_record_literal(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    let name = ks_record_name(sem, id)
+    let res = ks_resolve_record(sem, "", name)
+    if (res.found == 0)
+    {
+        ks_error(sem, "E6105", "unknown type '" + name + "' in record literal", line, col, name.length)
+        for (i in 1 .. ks_nchild(sem, id)) { ks_check_expr(sem, sc, ctx, ks_child(sem, ks_child(sem, id, i), 0)) }
+        return "unknown"
+    }
+    let decl_fields = res.fields
+    let mut seen: [string] = []
+    for (i in 1 .. ks_nchild(sem, id))
+    {
+        let fid = ks_child(sem, id, i)
+        let fname = ks_text(sem, fid)
+        if (ks_has_name(seen, fname) == 1)
+        {
+            ks_error(sem, "E6112", "duplicate initializer field '" + fname + "'", ks_line(sem, fid), ks_col(sem, fid), fname.length)
+        }
+        else { seen.push(fname) }
+        let fi = ks_field_in(decl_fields, fname)
+        let value = ks_child(sem, fid, 0)
+        let vt = ks_check_expr(sem, sc, ctx, value)
+        if (fi < 0)
+        {
+            ks_error(sem, "E6208", "unknown field '" + fname + "' on type '" + res.type_name + "'", ks_line(sem, fid), ks_col(sem, fid), fname.length)
+        }
+        else
+        {
+            let fty = decl_fields[fi].ty
+            if (ks_uses_generic(fty, res.generics) == 0)
+            {
+                ks_require(sem, fty, vt, ks_line(sem, value), ks_col(sem, value), 1, "field '" + fname + "'")
+            }
+        }
+    }
+    for (i in 0 .. decl_fields.length)
+    {
+        if (ks_has_name(seen, decl_fields[i].name) == 0)
+        {
+            ks_error(sem, "E6111", "missing field '" + decl_fields[i].name + "' in '" + name + "'", line, col, name.length)
+        }
+    }
+    return res.type_name
+}
+
+pub fn ks_check_generic_apply(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let base = ks_child(sem, id, 0)
+    if (ks_kind(sem, base) == "Path")
+    {
+        let name = ks_text(sem, base)
+        if (ks_find_func(sem, name) >= 0) { return "fn" }
+        let vh = ks_find_variant_any(sem, name)
+        if (vh.type_idx >= 0) { return ks_variant_owner_type(sem, vh.type_idx) }
+    }
+    return ks_check_expr(sem, sc, ctx, base)
+}
+
+// ---------------------------------------------------------------------------
+// Statement and block checking.
+// ---------------------------------------------------------------------------
+
+pub fn ks_check_stmt(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    if (ks_ok_node(sem, id) == 0) { return "()" }
+    let tag = ks_kind(sem, id)
+    let line = ks_line(sem, id)
+    let col = ks_col(sem, id)
+    if (tag == "Let")
+    {
+        let pattern = ks_child(sem, id, 0)
+        let value = ks_child(sem, id, 1)
+        let declared = ks_parse_type(ks_aux(sem, id))
+        let vt = ks_check_expr(sem, sc, ctx, value)
+        let binding_ty = if (ks_ty_is_unknown(declared) == 1) { vt } else { declared }
+        if (ks_ty_is_unknown(declared) == 0)
+        {
+            ks_require(sem, declared, vt, line, col, 1, "let binding")
+        }
+        let is_mut = ks_flag(sem, id)
+        if (ks_kind(sem, pattern) == "PathPattern")
+        {
+            ks_declare(sem, sc, ks_text(sem, pattern), binding_ty, is_mut, line, col)
+        }
+        else
+        {
+            ks_check_pattern(sem, sc, ctx, binding_ty, pattern, 1)
+        }
+        if (ks_nchild(sem, id) >= 3)
+        {
+            let else_block = ks_child(sem, id, 2)
+            ks_scope_push(sc)
+            ks_check_expr(sem, sc, ctx, else_block)
+            ks_scope_pop(sc)
+        }
+        return "()"
+    }
+    if (tag == "Return")
+    {
+        let mut vt = "()"
+        if (ks_nchild(sem, id) > 0) { vt = ks_check_expr(sem, sc, ctx, ks_child(sem, id, 0)) }
+        ks_require(sem, ctx.ret, vt, line, col, 1, "return value")
+        return "!"
+    }
+    if (tag == "Break")
+    {
+        if (ctx.loop_depth == 0) { ks_error(sem, "E6602", "`break` outside of a loop", line, col, 1) }
+        if (ks_nchild(sem, id) > 0) { ks_check_expr(sem, sc, ctx, ks_child(sem, id, 0)) }
+        return "!"
+    }
+    if (tag == "Continue")
+    {
+        if (ctx.loop_depth == 0) { ks_error(sem, "E6602", "`continue` outside of a loop", line, col, 1) }
+        return "!"
+    }
+    if (tag == "ExprStmt")
+    {
+        return ks_check_expr(sem, sc, ctx, ks_child(sem, id, 0))
+    }
+    if (tag == "Block") { return ks_check_block(sem, sc, ctx, id) }
+    if (tag == "While")
+    {
+        let cond = ks_child(sem, id, 0)
+        let ct = ks_check_expr(sem, sc, ctx, cond)
+        ks_require_bool(sem, ct, ks_line(sem, cond), ks_col(sem, cond), "while condition")
+        let inner = KixCtx{ ret: ctx.ret, generics: ctx.generics, loop_depth: ctx.loop_depth + 1, is_closure: ctx.is_closure }
+        ks_scope_push(sc)
+        ks_check_block(sem, sc, inner, ks_child(sem, id, 1))
+        ks_scope_pop(sc)
+        return "()"
+    }
+    if (tag == "For")
+    {
+        let pattern = ks_child(sem, id, 0)
+        let iter = ks_child(sem, id, 1)
+        let body = ks_child(sem, id, 2)
+        let it = ks_check_expr(sem, sc, ctx, iter)
+        let mut elem = "unknown"
+        if (ks_ty_is_array(it) == 1) { elem = ks_ty_elem(it) }
+        elif (ks_contains(it, "range:") == 1) { elem = ks_sub(it, 6, it.length) }
+        elif (ks_ty_is_unknown(it) == 0) { ks_error(sem, "E6207", "cannot iterate over value of type '" + it + "'", line, col, 1) }
+        ks_scope_push(sc)
+        let inner = KixCtx{ ret: ctx.ret, generics: ctx.generics, loop_depth: ctx.loop_depth + 1, is_closure: ctx.is_closure }
+        ks_check_pattern(sem, sc, ctx, elem, pattern, 1)
+        ks_check_block(sem, sc, inner, body)
+        ks_scope_pop(sc)
+        return "()"
+    }
+    // Fallback: treat as expression.
+    return ks_check_expr(sem, sc, ctx, id)
+}
+
+pub fn ks_check_block(sem: &KixSem, sc: &KixScope, ctx: KixCtx, id: i32): string
+{
+    let n = ks_nchild(sem, id)
+    let has_tail = ks_flag(sem, id)
+    let mut result = "()"
+    let mut diverged = 0
+    ks_scope_push(sc)
+    for (i in 0 .. n)
+    {
+        let child = ks_child(sem, id, i)
+        if (has_tail == 1 and i == n - 1)
+        {
+            result = ks_check_expr(sem, sc, ctx, child)
+        }
+        else
+        {
+            let st = ks_check_stmt(sem, sc, ctx, child)
+            if (ks_ty_is_never(st) == 1) { diverged = 1 }
+        }
+    }
+    ks_scope_pop(sc)
+    if (diverged == 1 and has_tail == 0) { return "!" }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// Function body checking and top-level entry point.
+// ---------------------------------------------------------------------------
+
+pub fn ks_check_function(sem: &KixSem, f: KixFunc)
+{
+    if (f.body < 0) { return }
+    let sc = ks_scope_new()
+    for (i in 0 .. f.params.length)
+    {
+        let p = f.params[i]
+        let ty = if (p.is_self == 1) { f.owner } else { p.ty }
+        ks_declare_existing(&sc, p.name, ty)
+        if (p.is_mut == 1) { ks_scope_mark_mut(&sc, p.name) }
+    }
+    let ctx = KixCtx{ ret: f.ret, generics: f.generics, loop_depth: 0, is_closure: 0 }
+    let bt = if (ks_kind(sem, f.body) == "Block") { ks_check_block(sem, &sc, ctx, f.body) } else { ks_check_expr(sem, &sc, ctx, f.body) }
+    ks_require(sem, f.ret, bt, ks_line(sem, f.node_id), ks_col(sem, f.node_id), 1, "function '" + f.name + "' return value")
+}
+
+pub fn kix_semantic_check(program: KixProgram, source: string, filename: string): KixSemanticResult
+{
+    if (program.ok == 0)
+    {
+        return KixSemanticResult{ ok: 0, error_count: 1, warning_count: 0, render: program.error }
+    }
+    let sem = KixSem{ store: program.store, filename: filename, source: source, funcs: [], types: [], diags: [], error_count: 0, warning_count: 0 }
+    ks_collect_types(&sem, program.items)
+    ks_collect_funcs(&sem, program.items)
+    for (i in 0 .. sem.funcs.length)
+    {
+        ks_check_dup_params(&sem, sem.funcs[i])
+        ks_check_func_signature(&sem, sem.funcs[i])
+    }
+    for (i in 0 .. sem.funcs.length)
+    {
+        ks_check_function(&sem, sem.funcs[i])
+    }
+    let mut render = ""
+    for (i in 0 .. sem.diags.length)
+    {
+        if (i > 0) { render = render + "\n" }
+        render = render + ks_diag_render(sem.diags[i])
+    }
+    let ok = if (sem.error_count > 0) { 0 } else { 1 }
+    return KixSemanticResult{ ok: ok, error_count: sem.error_count, warning_count: sem.warning_count, render: render }
+}

@@ -1,0 +1,11 @@
+fn sum(values: [Int]): Int {
+    let mut total = 0
+    for value in values {
+        total = total + value
+    }
+    let mut i = 0
+    while i < 3 {
+        i = i + 1
+    }
+    total
+}

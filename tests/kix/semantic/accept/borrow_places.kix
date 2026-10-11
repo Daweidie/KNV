@@ -1,0 +1,8 @@
+type Point = { x: Int, y: Int }
+
+fn borrow_places(mut point: Point, mut items: [Int], pointer: *Int): Int {
+    let a = &point.x
+    let b = &mut items[0]
+    let c = &*pointer
+    0
+}

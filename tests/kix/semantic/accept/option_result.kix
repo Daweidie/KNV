@@ -1,0 +1,19 @@
+type Option[T] = Some(T) | None
+type Result[T, E] = Ok(T) | Err(E)
+
+fn parse(value: Int): Option[Int] = if value > 0 { Some(value) } else { None }
+
+fn first(values: [Int]): Result[Int, Str] {
+    if values.length > 0 { Ok(values[0]) } else { Err("empty") }
+}
+
+fn chained(value: Int): Option[Int] {
+    let x = parse(value)?
+    let y = parse(value) ?? 0
+    Some(x + y)
+}
+
+fn result_chain(values: [Int]): Result[Int, Str] {
+    let x = first(values)?
+    Ok(x + 1)
+}

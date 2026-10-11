@@ -1,0 +1,2 @@
+type Point = { x: Int }
+fn main(p: Point): Int = p.z

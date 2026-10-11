@@ -1,0 +1,12 @@
+fn widen(x: Int): f64 = x as f64
+fn narrow(x: f64): Int = x as Int
+fn main(): Int {
+    let a = 1
+    let b = 2.0
+    let c = true
+    let d = 'x'
+    let e = "text"
+    let f = widen(a)
+    let g = narrow(f)
+    g
+}

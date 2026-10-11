@@ -1,0 +1,16 @@
+type Point = { x: Int, y: Int }
+
+trait Area {
+    fn area(self): Int
+}
+
+impl Area for Point {
+    fn area(self): Int = self.x * self.y
+}
+
+fn make(): Point = Point { x: 2, y: 3 }
+
+fn use_area(): Int {
+    let p = make()
+    p.area()
+}

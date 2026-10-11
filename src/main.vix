@@ -359,10 +359,18 @@ fn run_mode(mode: string, src: string, filename: string, emit: string, output: s
             if (kix_program.ok == 0)
             {
                 diag_print(kix_program.error)
+                diag_protocol_finish(1, 0)
                 return mode_failure()
             }
-            if (mode == "--ast-json") { info_print(kix_ast_json(kix_program)) }
-            elif (mode != "--check") { info_print(kix_ast_debug(kix_program)) }
+            if (mode == "--ast-json") { info_print(kix_ast_json(kix_program)); return mode_success() }
+            if (mode != "--check") { info_print(kix_ast_debug(kix_program)); return mode_success() }
+            let kix_semantic = kix_semantic_check(kix_program, src, filename)
+            if (kix_semantic.ok == 0)
+            {
+                diag_print(kix_semantic.render)
+                diag_protocol_finish(kix_semantic.error_count, kix_semantic.warning_count)
+                return mode_failure()
+            }
             return mode_success()
         }
         diag_print("vixc: error: Kix semantic analysis and code generation are not implemented yet; use '--check' or '--ast-json'")

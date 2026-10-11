@@ -18,17 +18,25 @@ Kix 是一门正在实现中的静态类型系统语言。项目目标是用少�
 - 表达式块、无括号 `if`、`match`、循环、闭包和 `let-else`；
 - 泛型调用、记录构造、索引、切片、范围、管道、`?` 和 `??`；
 - 结构化模式以及文本、JSON AST 输出；
-- 字段、索引和解引用 place 的 `&` / `&mut` 借用 AST。
+- 字段、索引和解引用 place 的 `&` / `&mut` 借用 AST；
+- Kix 名字解析、作用域和符号表，覆盖函数、类型、参数、局部绑定和构造子；
+- Kix 类型规范化与基础类型检查，包括字面量、调用、字段、索引、块、`if`、`match`、赋值、`return`、`break` 和闭包；
+- 拒绝隐式数值转换，并验证合法的显式 `as`；
+- 结构化模式绑定、重复绑定检查、or-pattern 一致性、match 分支类型统一与穷尽性诊断；
+- `&`/`&mut` place 分类和最小可变性检查，拒绝右值借用；
+- 首版 `Option`/`Result` 的 `?` 与 `??` 类型规则；
+- 基础 trait/impl 方法查找。
 
 仍在实现：
 
-- Kix 名字解析、类型检查和 trait/impl 语义；
-- match 穷尽性和借用检查；
+- 完整借用检查、生命周期和所有权分析；
+- 泛型约束和 trait 约束的完整求解；
 - Kix AST 到现有 Vix/LLVM 后端的 lowering；
 - `kixc build|run|check|ast` 的最终命令界面；
 - 使用 Kix 源码完成固定点自举。
 
-当前 `build/kixc-stage0 --check` 只做 Kix 词法和语法检查，尚不代表类型检查已经完成。
+当前 `build/kixc-stage0 --check` 会执行 Kix 名字解析和类型检查，并使用独立的
+`E6xxx` 诊断码；词法/语法错误仍是 `E1100`。Kix 代码生成尚未接通。
 
 ## 语法概览
 
@@ -109,17 +117,26 @@ VIX_HOME=/path/to/Vix-lang sh scripts/build-vixc-host.sh
 ./build/kixc-stage0 --lang=vix --check program.vix
 ```
 
-Kix 语义分析和代码生成尚未接通，因此目前不能把 `.kix` 编译为可执行文件。Vix 模式仍可使用既有后端。
+Kix 语义检查（`--check`）已接通，但代码生成尚未接通，因此目前不能把 `.kix` 编译为可执行文件。Vix 模式仍可使用既有后端。
 
 ## 测试
 
 ```sh
 python3 tests/kix/run_lexer.py --compiler build/kixc-stage0
 python3 tests/kix/run_parser.py --compiler build/kixc-stage0
+python3 tests/kix/run_semantic.py --compiler build/kixc-stage0
 
 # Vix 兼容回归
 python3 tests/syntax_tests.py build/kixc-stage0
 ```
+
+语义测试位于 `tests/kix/semantic/`：`accept/` 用例必须以 0 退出，
+`reject/` 用例必须非零退出，并返回同名 `.code` 文件中记录的稳定 `E6xxx`
+错误码和 `文件:行:列` 位置。
+
+Kix 语义诊断使用独立的错误码范围：名字解析 `E61xx`、类型检查 `E62xx`、
+模式 `E63xx`、借用 place `E64xx`、`Option`/`Result` 传播 `E65xx`、
+赋值可变性 `E66xx`。
 
 解析器测试覆盖主要语法、结构化模式、错误诊断和复合 place 借用。借用用例确认以下结构不会退化为单一变量名：
 
@@ -135,7 +152,8 @@ let target = &*pointer
 src/                  Stage 0 编译器源码
 src/kix_ast.vix       Kix AST
 src/kix_parser.vix    Kix parser
-tests/kix/            Kix lexer/parser 回归测试
+src/kix_semantic.vix  Kix 名字解析与类型检查
+tests/kix/            Kix lexer/parser/semantic 回归测试
 scripts/              LLVM 23 host 与 kixc-stage0 构建脚本
 seed/                 KNV 内保留的只读 Vix seed
 ```
@@ -144,8 +162,8 @@ seed/                 KNV 内保留的只读 Vix seed
 
 ## 路线
 
-1. 完成名字解析、类型系统、模式绑定和诊断。
-2. 完成 `Option`/`Result`、`?`、`??`、trait/impl 和 match 穷尽性。
+1. 完成名字解析、类型系统、模式绑定和诊断。（已完成首版）
+2. 完成 `Option`/`Result`、`?`、`??`、trait/impl 和 match 穷尽性。（已完成首版）
 3. 将 Kix AST lowering 到现有中间表示，复用 LLVM 后端。
 4. 打通 hello、fib、ADT/match、泛型、循环和错误传播程序。
 5. 用 Kix 重写编译器并完成固定点自举。

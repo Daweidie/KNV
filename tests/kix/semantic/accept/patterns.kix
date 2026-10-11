@@ -1,0 +1,24 @@
+type Option[T] = Some(T) | None
+type Shape = Circle | Rect | Dot
+
+fn classify(shape: Shape): Int {
+    match shape {
+        Circle => 1
+        Rect => 2
+        Dot => 0
+    }
+}
+
+fn unwrap(value: Option[Int]): Int {
+    match value {
+        Some(x) => x
+        None => 0
+    }
+}
+
+fn or_patterns(value: Option[Int]): Int {
+    match value {
+        Some(1) | Some(2) => 1
+        Some(_) | None => 0
+    }
+}

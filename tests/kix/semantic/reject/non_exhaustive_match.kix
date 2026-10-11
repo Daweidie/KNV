@@ -1,0 +1,7 @@
+type Shape = Circle | Rect | Dot
+fn main(s: Shape): Int {
+    match s {
+        Circle => 1
+        Rect => 2
+    }
+}

@@ -1,0 +1,4 @@
+fn apply(value: Int): Int {
+    let f = fn(x: Int): Int = x + 1
+    f(value)
+}

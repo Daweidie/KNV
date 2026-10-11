@@ -1,0 +1,25 @@
+type Shape =
+    | Circle { radius: f64 }
+    | Rect { width: f64, height: f64 }
+    | Dot
+
+trait Area {
+    fn area(self): f64
+}
+
+impl Area for Shape {
+    fn area(self): f64 = match self {
+        Circle { radius } => 3.14159 * radius * radius
+        Rect { width, height } => width * height
+        Dot => 0.0
+    }
+}
+
+fn id[T](value: T): T = value
+
+fn main(): Int {
+    let shape = Circle { radius: 2.0 }
+    let value = id[f64](shape.area())
+    print(value)
+    0
+}
